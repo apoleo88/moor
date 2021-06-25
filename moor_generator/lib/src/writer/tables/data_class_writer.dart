@@ -5,10 +5,8 @@ import 'package:moor_generator/src/writer/utils/override_toString.dart';
 import 'package:moor_generator/writer.dart';
 
 class DataClassWriter {
-  final MoorEntityWithResultSet table;
+  final MoorTable table;
   final Scope scope;
-
-  bool get isInsertable => table is MoorTable;
 
   StringBuffer _buffer;
 
@@ -19,23 +17,25 @@ class DataClassWriter {
   String get serializerType => scope.nullableType('ValueSerializer');
 
   void write() {
-    _buffer.write('class ${table.dartTypeName} extends DataClass ');
-    if (isInsertable) {
-      // The data class is only an insertable if we can actually insert rows
-      // into the target entity.
-      _buffer.writeln('implements Insertable<${table.dartTypeName}> {');
-    } else {
-      _buffer.writeln('{');
-    }
+    _buffer.write('class ${table.dartTypeName} extends DataClass '
+        'implements Insertable<${table.dartTypeName}> {\n');
 
     // write individual fields
-    for (final column in table.columns) {
+    for (final MoorColumn column in table.columns) {
       if (column.documentationComment != null) {
         _buffer.write('${column.documentationComment}\n');
       }
       final modifier = scope.options.fieldModifier;
-      _buffer.write('$modifier ${column.dartTypeCode(scope.generationOptions)} '
-          '${column.dartGetterName}; \n');
+
+      String type = column.dartTypeCode(scope.generationOptions);
+
+      // remove ? if not nullable()
+      if(!column.nullable)
+        type = type.replaceFirst('?', '');
+      if(column.hasAI && !type.contains('?'))
+        type += '?';
+
+      _buffer.write('$modifier $type ${column.dartGetterName}; \n');
     }
 
     // write constructor with named optional fields
@@ -43,7 +43,16 @@ class DataClassWriter {
       ..write(table.dartTypeName)
       ..write('({')
       ..write(table.columns.map((column) {
-        if (column.nullable) {
+        //  REQUIRED if it doesn't have a default value is required, otherwise not!
+        //  it if is autoincrement, it is not required.
+        //  DEFALT VALUE
+        if(column.defaultArgument != null && column.defaultArgument != 'const Constant(null)'
+          && column.dslColumnTypeName != 'DateTimeColumn'
+        ){
+          String default_value = column.defaultArgument
+              .replaceFirst('const Constant(', '').replaceFirst(')', '');
+          return 'this.${column.dartGetterName}: ${default_value}';
+        } else if (column.nullable || column.hasAI) {
           return 'this.${column.dartGetterName}';
         } else {
           return '${scope.required} this.${column.dartGetterName}';
@@ -54,11 +63,9 @@ class DataClassWriter {
     // Also write parsing factory
     _writeMappingConstructor();
 
-    if (isInsertable) {
-      _writeToColumnsOverride();
-      if (scope.options.dataClassToCompanions) {
-        _writeToCompanion();
-      }
+    _writeToColumnsOverride();
+    if (scope.options.dataClassToCompanions) {
+      _writeToCompanion();
     }
 
     // And a serializer and deserializer method
@@ -80,14 +87,10 @@ class DataClassWriter {
 
   void _writeMappingConstructor() {
     final dataClassName = table.dartTypeName;
-    // The GeneratedDatabase db parameter is not actually used, but we need to
-    // keep it on tables for backwards compatibility.
-    final includeUnusedDbColumn = table is MoorTable;
 
     _buffer
       ..write('factory $dataClassName.fromData')
-      ..write('(Map<String, dynamic> data, ')
-      ..write(includeUnusedDbColumn ? ' GeneratedDatabase db,' : '')
+      ..write('(Map<String, dynamic> data, GeneratedDatabase db, ')
       ..write('{${scope.nullableType('String')} prefix}) { \n')
       ..write("final effectivePrefix = prefix ?? '';");
 
@@ -98,6 +101,7 @@ class DataClassWriter {
       scope.generationOptions,
     );
 
+    // finally, the mighty constructor invocation:
     _buffer.write('return $dataClassName');
     writer.writeArguments(_buffer);
     _buffer.write(';}\n');
@@ -143,7 +147,7 @@ class DataClassWriter {
       final name = column.getJsonKey(scope.options);
       final getter = column.dartGetterName;
       final needsThis = getter == 'serializer';
-      final value = needsThis ? 'this.$getter' : getter;
+      final value = (needsThis ? 'this.$getter' : getter) + (column.hasAI ? '!' : '');
       final dartType = column.dartTypeCode(scope.generationOptions);
 
       _buffer.write("'$name': serializer.toJson<$dartType>($value),");
@@ -224,23 +228,22 @@ class DataClassWriter {
       if (column.typeConverter != null) {
         // apply type converter before writing the variable
         final converter = column.typeConverter;
-        final fieldName =
-            '${converter.table.entityInfoName}.${converter.fieldName}';
-        final assertNotNull = !column.nullable && scope.generationOptions.nnbd;
+        final fieldName = '${table.tableInfoName}.${converter.fieldName}';
+        final assertNotNull = column.hasAI || (!column.nullable && scope.generationOptions.nnbd);
 
         _buffer
           ..write('final converter = $fieldName;\n')
           ..write(mapSetter)
           ..write('(converter.mapToSql(${column.dartGetterName})');
-        if (assertNotNull) _buffer.write('!');
         _buffer.write(');');
       } else {
         // no type converter. Write variable directly
         _buffer
           ..write(mapSetter)
           ..write('(')
-          ..write(column.dartGetterName)
-          ..write(');');
+          ..write(column.dartGetterName);
+        if (column.hasAI) _buffer.write('!');
+        _buffer.write(');');
       }
 
       // This one closes the optional if from before.
@@ -251,22 +254,21 @@ class DataClassWriter {
   }
 
   void _writeToCompanion() {
-    final asTable = table as MoorTable;
-
     _buffer
-      ..write(asTable.getNameForCompanionClass(scope.options))
+      ..write(table.getNameForCompanionClass(scope.options))
       ..write(' toCompanion(bool nullToAbsent) {\n');
 
     _buffer
       ..write('return ')
-      ..write(asTable.getNameForCompanionClass(scope.options))
+      ..write(table.getNameForCompanionClass(scope.options))
       ..write('(');
 
     for (final column in table.columns) {
       final dartName = column.dartGetterName;
       _buffer..write(dartName)..write(': ');
 
-      final needsNullCheck = column.nullable || !scope.generationOptions.nnbd;
+      final needsNullCheck = column.hasAI || column.dslColumnTypeName == 'DateTimeColumn' ||
+        ((column.defaultArgument == null) && (column.nullable || !scope.generationOptions.nnbd));
       if (needsNullCheck) {
         _buffer
           ..write(dartName)
@@ -274,7 +276,10 @@ class DataClassWriter {
         // We'll write the non-null case afterwards
       }
 
-      _buffer..write('Value (')..write(dartName)..write('),');
+      _buffer..write('Value (')..write(dartName);
+      if(column.hasAI)
+        _buffer..write('!');
+      _buffer..write('),');
     }
 
     _buffer.writeln(');\n}');
@@ -302,10 +307,13 @@ class DataClassWriter {
 class RowMappingWriter {
   final List<MoorColumn> positional;
   final Map<MoorColumn, String> named;
-  final MoorEntityWithResultSet table;
+  final MoorTable table;
   final GenerationOptions options;
 
-  RowMappingWriter(this.positional, this.named, this.table, this.options);
+  final String dbName;
+
+  RowMappingWriter(this.positional, this.named, this.table, this.options,
+      {this.dbName = 'db'});
 
   void writeArguments(StringBuffer buffer) {
     String readAndMap(MoorColumn column) {
@@ -318,8 +326,7 @@ class RowMappingWriter {
       if (column.typeConverter != null) {
         // stored as a static field
         final converter = column.typeConverter;
-        final loaded =
-            '${converter.table.entityInfoName}.${converter.fieldName}';
+        final loaded = '${table.tableInfoName}.${converter.fieldName}';
         loadType = '$loaded.mapToDart($loadType)';
       }
 
