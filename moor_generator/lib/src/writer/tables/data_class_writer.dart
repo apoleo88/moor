@@ -164,7 +164,7 @@ class DataClassWriter {
       final name = column.getJsonKey(scope.options);
       final getter = column.dartGetterName;
       final needsThis = getter == 'serializer';
-      final value = needsThis ? 'this.$getter' : getter;
+      final value = (needsThis ? 'this.$getter' : getter) + (column.hasAI ? '!' : '');
       final dartType = column.dartTypeCode(scope.generationOptions);
 
       _buffer.write("'$name': serializer.toJson<$dartType>($value),");
