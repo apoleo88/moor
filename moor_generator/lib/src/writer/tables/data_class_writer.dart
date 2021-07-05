@@ -29,13 +29,24 @@ class DataClassWriter {
     }
 
     // write individual fields
-    for (final column in table.columns) {
+    /// MY CHANGES HERE
+    for (final MoorColumn column in table.columns) {
       if (column.documentationComment != null) {
         _buffer.write('${column.documentationComment}\n');
       }
       final modifier = scope.options.fieldModifier;
-      _buffer.write('$modifier ${column.dartTypeCode(scope.generationOptions)} '
-          '${column.dartGetterName}; \n');
+
+      String type = column.dartTypeCode(scope.generationOptions);
+
+      // remove ? if not nullable()
+      if(!column.nullable)
+        type = type.replaceFirst('?', '');
+      if(column.hasAI && !type.contains('?'))
+        type += '?';
+
+      _buffer.write('$modifier $type ${column.dartGetterName}; \n');
+      // _buffer.write('$modifier ${column.dartTypeCode(scope.generationOptions)} '
+      //     '${column.dartGetterName}; \n');
     }
 
     // write constructor with named optional fields
@@ -43,7 +54,17 @@ class DataClassWriter {
       ..write(table.dartTypeName)
       ..write('({')
       ..write(table.columns.map((column) {
-        if (column.nullable) {
+        /// MY CHANGES HERE
+        //  REQUIRED if it doesn't have a default value is required, otherwise not!
+        //  it if is autoincrement, it is not required.
+        //  DEFALT VALUE
+        if(column.defaultArgument != null && column.defaultArgument != 'const Constant(null)'
+            && column.innerColumnType() != 'DateTimeColumn'
+        ){
+          String default_value = column.defaultArgument
+              .replaceFirst('const Constant(', '').replaceFirst(')', '');
+          return 'this.${column.dartGetterName}: ${default_value}';
+        } else if (column.nullable || column.hasAI) {
           return 'this.${column.dartGetterName}';
         } else {
           return '${scope.required} this.${column.dartGetterName}';
@@ -225,21 +246,24 @@ class DataClassWriter {
         // apply type converter before writing the variable
         final converter = column.typeConverter;
         final fieldName = converter.tableAndField;
-        final assertNotNull = !column.nullable && scope.generationOptions.nnbd;
+        /// MY CHANGES HERE
+        // final assertNotNull = !column.nullable && scope.generationOptions.nnbd;
+        // final assertNotNull = column.hasAI || (!column.nullable && scope.generationOptions.nnbd);
 
         _buffer
           ..write('final converter = $fieldName;\n')
           ..write(mapSetter)
           ..write('(converter.mapToSql(${column.dartGetterName})');
-        if (assertNotNull) _buffer.write('!');
+        // if (assertNotNull) _buffer.write('!');
         _buffer.write(');');
       } else {
         // no type converter. Write variable directly
         _buffer
           ..write(mapSetter)
           ..write('(')
-          ..write(column.dartGetterName)
-          ..write(');');
+          ..write(column.dartGetterName);
+        if (column.hasAI) _buffer.write('!');
+        _buffer.write(');');
       }
 
       // This one closes the optional if from before.
@@ -265,7 +289,8 @@ class DataClassWriter {
       final dartName = column.dartGetterName;
       _buffer..write(dartName)..write(': ');
 
-      final needsNullCheck = column.nullable || !scope.generationOptions.nnbd;
+      final needsNullCheck = column.hasAI || column.innerColumnType() == 'DateTimeColumn' ||
+          ((column.defaultArgument == null) && (column.nullable || !scope.generationOptions.nnbd));
       if (needsNullCheck) {
         _buffer
           ..write(dartName)
@@ -273,7 +298,10 @@ class DataClassWriter {
         // We'll write the non-null case afterwards
       }
 
-      _buffer..write('Value (')..write(dartName)..write('),');
+      _buffer..write('Value (')..write(dartName);
+      if(column.hasAI)
+        _buffer.write('!');
+      _buffer.write('),');
     }
 
     _buffer.writeln(');\n}');
