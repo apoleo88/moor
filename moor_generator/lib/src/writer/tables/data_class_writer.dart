@@ -59,7 +59,7 @@ class DataClassWriter {
         //  it if is autoincrement, it is not required.
         //  DEFALT VALUE
         if(column.defaultArgument != null && column.defaultArgument != 'const Constant(null)'
-            && column.innerColumnType() != 'DateTimeColumn'
+            && column.innerColumnType() != 'DateTime'
         ){
           String default_value = column.defaultArgument
               .replaceFirst('const Constant(', '').replaceFirst(')', '');
@@ -289,7 +289,7 @@ class DataClassWriter {
       final dartName = column.dartGetterName;
       _buffer..write(dartName)..write(': ');
 
-      final needsNullCheck = column.hasAI || column.innerColumnType() == 'DateTimeColumn' ||
+      final needsNullCheck = column.hasAI || column.innerColumnType() == 'DateTime' ||
           ((column.defaultArgument == null) && (column.nullable || !scope.generationOptions.nnbd));
       if (needsNullCheck) {
         _buffer
