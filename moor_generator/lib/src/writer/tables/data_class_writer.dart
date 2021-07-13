@@ -231,7 +231,7 @@ class DataClassWriter {
       // We include all columns that are not null. If nullToAbsent is false, we
       // also include null columns. When generating NNBD code, we can include
       // non-nullable columns without an additional null check.
-      final needsNullCheck = column.nullable || !scope.generationOptions.nnbd;
+      final needsNullCheck = column.nullable || !scope.generationOptions.nnbd || column.hasAI;
       final needsScope = needsNullCheck || column.typeConverter != null;
       if (needsNullCheck) {
         _buffer.write('if (!nullToAbsent || ${column.dartGetterName} != null)');
@@ -248,13 +248,13 @@ class DataClassWriter {
         final fieldName = converter.tableAndField;
         /// MY CHANGES HERE
         // final assertNotNull = !column.nullable && scope.generationOptions.nnbd;
-        // final assertNotNull = column.hasAI || (!column.nullable && scope.generationOptions.nnbd);
+        final assertNotNull = column.hasAI || (!column.nullable && scope.generationOptions.nnbd);
 
         _buffer
           ..write('final converter = $fieldName;\n')
           ..write(mapSetter)
           ..write('(converter.mapToSql(${column.dartGetterName})');
-        // if (assertNotNull) _buffer.write('!');
+        if (assertNotNull) _buffer.write('!');
         _buffer.write(');');
       } else {
         // no type converter. Write variable directly
