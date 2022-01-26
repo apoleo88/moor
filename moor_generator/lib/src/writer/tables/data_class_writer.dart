@@ -139,7 +139,15 @@ class DataClassWriter {
       final jsonKey = column.getJsonKey(scope.options);
       final type = column.dartTypeCode(scope.generationOptions);
 
-      _buffer.write("$getter: serializer.fromJson<$type>(json['$jsonKey']),");
+      /// MY CHANGES HERE
+      if(column.defaultArgument != null) {
+        String default_value = column.defaultArgument.replaceFirst('const Constant(', '').replaceFirst(')', '');
+
+        _buffer.write("$getter: (json.containsKey('$jsonKey')) ? serializer.fromJson<$type>(json['$jsonKey'])"
+            " : $default_value,");
+      }else{
+        _buffer.write("$getter: serializer.fromJson<$type>(json['$jsonKey']),");
+      }
     }
 
     _buffer.write(');}\n');
