@@ -140,11 +140,10 @@ class DataClassWriter {
       final type = column.dartTypeCode(scope.generationOptions);
 
       /// MY CHANGES HERE
-      if(column.defaultArgument != null) {
+      if(column.defaultArgument != null && column.innerColumnType() != 'DateTime') {
         String default_value = column.defaultArgument.replaceFirst('const Constant(', '').replaceFirst(')', '');
 
-        _buffer.write("$getter: (json.containsKey('$jsonKey')) ? serializer.fromJson<$type>(json['$jsonKey'])"
-            " : $default_value,");
+        _buffer.write("$getter: (json.containsKey('$jsonKey')) ? serializer.fromJson<$type>(json['$jsonKey']) : $default_value,");
       }else{
         _buffer.write("$getter: serializer.fromJson<$type>(json['$jsonKey']),");
       }
