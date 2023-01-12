@@ -80,7 +80,7 @@ import 'package:test/test.dart';
 import 'database.dart'; 
 
 void main() {
-  MyDatabase database;
+  late MyDatabase database;
 
   setUp(() {
     database = MyDatabase(NativeDatabase.memory());
