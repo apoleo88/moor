@@ -1,3 +1,6 @@
+import 'package:collection/collection.dart';
+import 'package:drift/drift.dart';
+
 import '../../analysis/results/results.dart';
 import '../../utils/string_escaper.dart';
 import '../utils/hash_and_equals.dart';
@@ -64,7 +67,12 @@ class DataClassWriter {
     }
 
     // write individual fields
-    for (final column in columns) {
+    /// MY CHANGES HERE
+    for (final DriftColumn column in columns) {
+      // print(column.nameInDart);
+      // print(column.defaultArgument);
+      // print(column.defaultArgument.toString());
+
       if (column.documentationComment != null) {
         _buffer.write('${column.documentationComment}\n');
       }
@@ -72,7 +80,35 @@ class DataClassWriter {
         _buffer.writeln('@override');
       }
       final modifier = scope.options.fieldModifier;
-      _buffer.writeln('$modifier ${_columnType(column)} ${column.nameInDart};');
+
+      String type = _columnType(column);
+      // remove ? if not nullable()
+      if(!column.nullable)
+        type = type.replaceFirst('?', '');
+      if(
+      // this is like column.hasAI (has auto increment)
+      column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null
+          && !type.contains('?')
+      )
+        type += '?';
+
+      // if(column.nameInDart == 'id' || column.nameInDart == 'uid' || column.nameInDart == 'package_uid'){
+      //   // print("=====" + type);
+      //   // print(column.nameInDart);
+      //   // print("nullable: " + column.nullable.toString());
+      //   for(DriftColumnConstraint c in column.constraints){
+      //     if(c is PrimaryKeyColumn)
+      //       print(c.toString() + ":" + c.isAutoIncrement.toString());
+      //     else
+      //       print(c.toString());
+      //   }
+      //   // if(column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null
+      //   //     && !type.contains('?')
+      //   // )
+      //   //   print("===>  DATO IL ?");
+      // }
+
+      _buffer.writeln('$modifier $type ${column.nameInDart}; \n');
     }
 
     // write constructor with named optional fields
@@ -84,11 +120,21 @@ class DataClassWriter {
       ..write(table.nameOfRowClass)
       ..write('({')
       ..write(columns.map((column) {
+        /// MY CHANGES HERE
         final nullableDartType = column.typeConverter != null
             ? column.typeConverter!.mapsToNullableDart(column.nullable)
             : column.nullable;
 
-        if (nullableDartType) {
+        if(column.defaultArgument != null && column.defaultArgument.toString() != 'const Constant(null)'
+            && column.sqlType != DriftSqlType.dateTime
+        ){
+          String default_value = column.defaultArgument!.toString()
+              .replaceFirst('const Constant(', '').replaceFirst(')', '');
+          return 'this.${column.nameInDart}: ${default_value}';
+        } else
+        if (nullableDartType ||
+            column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null
+        ){
           return 'this.${column.nameInDart}';
         } else {
           return 'required this.${column.nameInDart}';
@@ -147,19 +193,27 @@ class DataClassWriter {
 
       final typeConverter = column.typeConverter;
       if (typeConverter != null && typeConverter.alsoAppliesToJsonConversion) {
-        var type =
-            _emitter.dartCode(AnnotatedDartCode.type(typeConverter.jsonType!));
+        var type = _emitter.dartCode(AnnotatedDartCode.type(typeConverter.jsonType!));
         if (column.nullable && typeConverter.canBeSkippedForNulls) {
           type = '$type?';
         }
 
-        final fromConverter = "serializer.fromJson<$type>(json['$jsonKey'])";
+        var fromConverter = "serializer.fromJson<$type>(json['$jsonKey'])";
         final converterField = _converter(column);
+
         deserialized = '$converterField.fromJson($fromConverter)';
       } else {
         final type = _columnType(column);
 
-        deserialized = "serializer.fromJson<$type>(json['$jsonKey'])";
+        /// MY CHANGES HERE
+        if(column.defaultArgument != null && column.defaultArgument.toString() != 'const Constant(null)'
+            && column.sqlType != DriftSqlType.dateTime
+        ) {
+          String default_value = column.defaultArgument!.toString()
+              .replaceFirst('const Constant(', '').replaceFirst(')', '');
+          deserialized = "(json.containsKey('$jsonKey')) ? serializer.fromJson<$type>(json['$jsonKey']) : $default_value";
+        }else
+          deserialized = "serializer.fromJson<$type>(json['$jsonKey'])";
       }
 
       _buffer.write('$getter: $deserialized,');
@@ -198,6 +252,9 @@ class DataClassWriter {
         dartType = _jsonType(column);
       }
 
+      if(column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null
+          && !dartType.contains('?')
+      ) dartType += '?';
       _buffer.write("'$name': serializer.toJson<$dartType>($value),");
     }
 
@@ -273,7 +330,10 @@ class DataClassWriter {
         ..write(dartName)
         ..write(': ');
 
-      final needsNullCheck = column.nullableInDart;
+      final needsNullCheck =
+          column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null
+              || column.sqlType != DriftSqlType.dateTime
+              || (column.defaultArgument == null && column.nullable);
       if (needsNullCheck) {
         _buffer
           ..write(dartName)
@@ -285,8 +345,11 @@ class DataClassWriter {
       _buffer
         ..write(_emitter.drift('Value'))
         ..write('(')
-        ..write(dartName)
-        ..write('),');
+        ..write(dartName);
+      if(column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null)
+        _buffer.write('!');
+
+      _buffer..write('),');
     }
 
     _buffer.writeln(');\n}');
@@ -394,7 +457,8 @@ extension WriteToColumns on TextEmitter {
       // also include null columns. When generating NNBD code, we can include
       // non-nullable columns without an additional null check since we know
       // the values aren't going to be null.
-      final needsNullCheck = column.nullableInDart;
+      final needsNullCheck = column.nullableInDart ||
+          column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null;
       final needsScope = needsNullCheck || column.typeConverter != null;
       if (needsNullCheck) {
         write('if (!nullToAbsent || ${column.nameInDart} != null)');
@@ -420,8 +484,10 @@ extension WriteToColumns on TextEmitter {
         this
           ..write(mapSetter)
           ..write('(')
-          ..write(column.nameInDart)
-          ..write(');');
+          ..write(column.nameInDart);
+        if(column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null)
+          this..write('!');
+        this..write(');');
       }
 
       // This one closes the optional if from before.
