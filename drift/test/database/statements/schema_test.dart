@@ -1,4 +1,5 @@
 import 'package:drift/drift.dart';
+import 'package:drift/internal/versioned_schema.dart';
 import 'package:mockito/mockito.dart';
 import 'package:test/test.dart';
 
@@ -211,6 +212,104 @@ void main() {
     // https://github.com/simolus3/drift/discussions/1936
     verify(executor.runCustom(argThat(contains('CHECK("foo" < 3)')), []));
   });
+
+  group('respects schema version', () {
+    late MockExecutor executor;
+    late _DefaultDb db;
+
+    setUp(() async {
+      executor = MockExecutor();
+      db = _DefaultDb(executor);
+    });
+
+    tearDown(() {
+      db.close();
+    });
+
+    test('in createAll', () async {
+      final defaultMigrator = db.createMigrator();
+      await defaultMigrator.createAll();
+      verifyNever(executor.runCustom(any));
+
+      final fixedMigrator =
+          Migrator(db, _FakeSchemaVersion(database: db, version: 2));
+      await fixedMigrator.createAll();
+      verify(executor.runCustom(
+        'CREATE TABLE IF NOT EXISTS "my_table" ("foo" INTEGER NOT NULL);',
+        [],
+      ));
+      verify(executor.runCustom(
+        'CREATE VIEW my_view AS SELECT 2',
+        [],
+      ));
+    });
+
+    test('in recreateViews', () async {
+      final defaultMigrator = db.createMigrator();
+      await defaultMigrator.recreateAllViews();
+      verifyNever(executor.runCustom(any));
+
+      final fixedMigrator =
+          Migrator(db, _FakeSchemaVersion(database: db, version: 2));
+      await fixedMigrator.recreateAllViews();
+
+      verify(executor.runCustom(
+        'CREATE VIEW my_view AS SELECT 2',
+        [],
+      ));
+    });
+  });
+
+  group('dialect-specific', () {
+    Map<SqlDialect, String> statements(String base) {
+      return {
+        for (final dialect in SqlDialect.values) dialect: '$base $dialect',
+      };
+    }
+
+    for (final dialect in [SqlDialect.sqlite, SqlDialect.postgres]) {
+      test('with dialect $dialect', () async {
+        final executor = MockExecutor();
+        when(executor.dialect).thenReturn(dialect);
+
+        final db = TodoDb(executor);
+        final migrator = db.createMigrator();
+
+        await migrator.create(Trigger.byDialect('a', statements('trigger')));
+        await migrator.create(Index.byDialect('a', statements('index')));
+        await migrator.create(OnCreateQuery.byDialect(statements('@')));
+
+        verify(executor.runCustom('trigger $dialect', []));
+        verify(executor.runCustom('index $dialect', []));
+        verify(executor.runCustom('@ $dialect', []));
+      });
+    }
+  });
+}
+
+final class _FakeSchemaVersion extends VersionedSchema {
+  _FakeSchemaVersion({required super.database, required super.version});
+
+  @override
+  Iterable<DatabaseSchemaEntity> get entities => [
+        VersionedTable(
+          entityName: 'my_table',
+          attachedDatabase: database,
+          columns: [
+            (name) => GeneratedColumn<int>('foo', name, false,
+                type: DriftSqlType.int),
+          ],
+          tableConstraints: [],
+          isStrict: false,
+          withoutRowId: false,
+        ),
+        VersionedView(
+          entityName: 'my_view',
+          attachedDatabase: database,
+          createViewStmt: 'CREATE VIEW my_view AS SELECT $version',
+          columns: [],
+        ),
+      ];
 }
 
 class _DefaultDb extends GeneratedDatabase {
@@ -218,6 +317,9 @@ class _DefaultDb extends GeneratedDatabase {
 
   @override
   List<TableInfo<Table, DataClass>> get allTables => [];
+
+  @override
+  Iterable<DatabaseSchemaEntity> get allSchemaEntities => [];
 
   @override
   int get schemaVersion => 2;

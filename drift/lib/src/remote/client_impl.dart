@@ -165,7 +165,7 @@ class _RemoteQueryExecutor extends _BaseExecutor {
     if (!channel.isClosed) {
       if (client._singleClientMode) {
         return channel
-            .request(NoArgsRequest.terminateAll)
+            .request<void>(NoArgsRequest.terminateAll)
             .onError<ConnectionClosedException>((error, stackTrace) => null)
             .whenComplete(channel.close);
       } else {
@@ -267,7 +267,7 @@ class _RemoteStreamQueryStore extends StreamQueryStore {
       }, test: (e) => e is ConnectionClosedException).whenComplete(() {
         _awaitingUpdates.remove(completer);
       });
-    } else {}
+    }
   }
 
   @override

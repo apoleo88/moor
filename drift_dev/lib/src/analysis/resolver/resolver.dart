@@ -6,7 +6,9 @@ import '../driver/error.dart';
 import '../driver/state.dart';
 import '../results/element.dart';
 
+import '../serializer.dart';
 import 'dart/accessor.dart' as dart_accessor;
+import 'dart/index.dart' as dart_index;
 import 'dart/table.dart' as dart_table;
 import 'dart/view.dart' as dart_view;
 import 'drift/index.dart' as drift_index;
@@ -25,18 +27,45 @@ class DriftResolver {
   /// This path is used to detect and prevent circular references.
   final List<DriftElementId> _currentDependencyPath = [];
 
+  late final ElementDeserializer _deserializer =
+      ElementDeserializer(driver, _currentDependencyPath);
+
   DriftResolver(this.driver);
 
-  /// Resolves a discovered element by analyzing it and its dependencies.
-  Future<DriftElement> resolveDiscovered(DiscoveredElement discovered) async {
-    LocalElementResolver resolver;
+  Future<DriftElement> resolveEntrypoint(DriftElementId element) async {
+    assert(_currentDependencyPath.isEmpty);
+    _currentDependencyPath.add(element);
 
+    return await _restoreOrResolve(element);
+  }
+
+  Future<DriftElement> _restoreOrResolve(DriftElementId element) async {
+    try {
+      if (await driver.readStoredAnalysisResult(element.libraryUri) != null) {
+        return await _deserializer.readDriftElement(element);
+      }
+    } on CouldNotDeserializeException catch (e, s) {
+      driver.backend.log.fine('Could not deserialize $element', e, s);
+    }
+
+    // We can't resolve the element from cache, so we need to resolve it.
+    final owningFile = driver.cache.stateForUri(element.libraryUri);
+    await driver.discoverIfNecessary(owningFile);
+    final discovered = owningFile.discovery!.locallyDefinedElements
+        .firstWhere((e) => e.ownId == element);
+
+    return await _resolveDiscovered(discovered);
+  }
+
+  /// Resolves a discovered element by analyzing it and its dependencies.
+  Future<DriftElement> _resolveDiscovered(DiscoveredElement discovered) async {
     final fileState = driver.cache.knownFiles[discovered.ownId.libraryUri]!;
     final elementState = fileState.analysis.putIfAbsent(
         discovered.ownId, () => ElementAnalysisState(discovered.ownId));
 
     elementState.errorsDuringAnalysis.clear();
 
+    LocalElementResolver resolver;
     if (discovered is DiscoveredDriftTable) {
       resolver = drift_table.DriftTableResolver(
           fileState, discovered, this, elementState);
@@ -58,6 +87,9 @@ class DriftResolver {
     } else if (discovered is DiscoveredDartView) {
       resolver =
           dart_view.DartViewResolver(fileState, discovered, this, elementState);
+    } else if (discovered is DiscoveredDartIndex) {
+      resolver = dart_index.DartIndexResolver(
+          fileState, discovered, this, elementState);
     } else if (discovered is DiscoveredBaseAccessor) {
       resolver = dart_accessor.DartAccessorResolver(
           fileState, discovered, this, elementState);
@@ -111,13 +143,14 @@ class DriftResolver {
 
     final pending = driver.cache.discoveredElements[reference];
     if (pending != null) {
+      // We know the element exists, but we haven't resolved it yet.
       _currentDependencyPath.add(reference);
 
       try {
-        final resolved = await resolveDiscovered(pending);
+        final resolved = await _restoreOrResolve(reference);
         return ResolvedReferenceFound(resolved);
       } catch (e, s) {
-        driver.backend.log.warning('Could not analze $reference', e, s);
+        driver.backend.log.warning('Could not analyze $reference', e, s);
         return ReferencedElementCouldNotBeResolved();
       } finally {
         final removed = _currentDependencyPath.removeLast();
@@ -134,14 +167,13 @@ class DriftResolver {
   Future<ResolveReferencedElementResult> resolveDartReference(
       DriftElementId owner, Element element) async {
     final uri = await driver.backend.uriOfDart(element.library!);
-    final state = await driver.prepareFileForAnalysis(uri);
+    final state = driver.cache.stateForUri(uri);
 
-    final discovered = state.discovery?.locallyDefinedElements
-        .whereType<DiscoveredDartElement>()
-        .firstWhereOrNull((c) => c.dartElement == element);
+    final existing = state.definedElements.firstWhereOrNull(
+        (existing) => existing.dartElementName == element.name);
 
-    if (discovered != null) {
-      return resolveReferencedElement(owner, discovered.ownId);
+    if (existing != null) {
+      return resolveReferencedElement(owner, existing.ownId);
     } else {
       return InvalidReferenceResult(
         InvalidReferenceError.noElementWichSuchName,
@@ -164,7 +196,7 @@ class DriftResolver {
     for (final available in driver.cache.crawl(file)) {
       final localElementIds = {
         ...available.analysis.keys,
-        ...?available.discovery?.locallyDefinedElements.map((e) => e.ownId),
+        ...available.definedElements.map((e) => e.ownId),
       };
 
       for (final definedLocally in localElementIds) {
@@ -210,7 +242,7 @@ abstract class LocalElementResolver<T extends DiscoveredElement> {
     DriftAnalysisError Function(String msg) createError,
   ) async {
     final result = await resolver.resolveReference(discovered.ownId, reference);
-    return _handleReferenceResult(result, createError);
+    return handleReferenceResult(result, createError);
   }
 
   Future<E?> resolveDartReferenceOrReportError<E extends DriftElement>(
@@ -219,10 +251,10 @@ abstract class LocalElementResolver<T extends DiscoveredElement> {
   ) async {
     final result =
         await resolver.resolveDartReference(discovered.ownId, reference);
-    return _handleReferenceResult(result, createError);
+    return handleReferenceResult(result, createError);
   }
 
-  E? _handleReferenceResult<E extends DriftElement>(
+  E? handleReferenceResult<E extends DriftElement>(
     ResolveReferencedElementResult result,
     DriftAnalysisError Function(String msg) createError,
   ) {
@@ -233,7 +265,7 @@ abstract class LocalElementResolver<T extends DiscoveredElement> {
       } else {
         // todo: Better type description in error message
         reportError(
-            createError('Expected a $T, but got a ${element.runtimeType}'));
+            createError('Expected a $E, but got a ${element.runtimeType}'));
       }
     } else {
       reportErrorForUnresolvedReference(result, createError);

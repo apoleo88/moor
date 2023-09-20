@@ -48,7 +48,7 @@ mixin TableInfo<TableDsl extends Table, D> on Table
 
   Map<String, GeneratedColumn>? _columnsByName;
 
-  /// Gets all [$columns] in this table, indexed by their (non-escaped) name.
+  @override
   Map<String, GeneratedColumn> get columnsByName {
     return _columnsByName ??= {
       for (final column in $columns) column.$name: column
@@ -151,7 +151,7 @@ extension TableInfoUtils<TableDsl, D> on ResultSetImplementation<TableDsl, D> {
   /// Drift would generate code to call this method with `'c1': 'foo'` and
   /// `'c2': 'bar'` in [alias].
   Future<D> mapFromRowWithAlias(QueryRow row, Map<String, String> alias) async {
-    return map({
+    return await map({
       for (final entry in row.data.entries) alias[entry.key]!: entry.value,
     });
   }

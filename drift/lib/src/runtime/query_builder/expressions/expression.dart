@@ -1,6 +1,6 @@
 part of '../query_builder.dart';
 
-const _equality = ListEquality();
+const _equality = ListEquality<Object?>();
 
 /// Base class for everything that can be used as a function parameter in sql.
 ///
@@ -142,13 +142,37 @@ abstract class Expression<D extends Object> implements FunctionParameter {
   /// An expression that is true if `this` resolves to any of the values in
   /// [values].
   Expression<bool> isIn(Iterable<D> values) {
-    return _InExpression(this, values.toList(), false);
+    return isInExp([for (final value in values) Variable<D>(value)]);
   }
 
   /// An expression that is true if `this` does not resolve to any of the values
   /// in [values].
   Expression<bool> isNotIn(Iterable<D> values) {
-    return _InExpression(this, values.toList(), true);
+    return isNotInExp([for (final value in values) Variable<D>(value)]);
+  }
+
+  /// An expression that evaluates to `true` if this expression resolves to a
+  /// value that one of the [expressions] resolve to as well.
+  ///
+  /// For an "is in" comparison with values, use [isIn].
+  Expression<bool> isInExp(List<Expression<D>> expressions) {
+    if (expressions.isEmpty) {
+      return Constant(false);
+    }
+
+    return _InExpression(this, expressions, false);
+  }
+
+  /// An expression that evaluates to `true` if this expression does not resolve
+  /// to any value that the [expressions] resolve to.
+  ///
+  /// For an "is not in" comparison with values, use [isNotIn].
+  Expression<bool> isNotInExp(List<Expression<D>> expressions) {
+    if (expressions.isEmpty) {
+      return Constant(true);
+    }
+
+    return _InExpression(this, expressions, true);
   }
 
   /// An expression checking whether `this` is included in any row of the
@@ -200,11 +224,11 @@ abstract class Expression<D extends Object> implements FunctionParameter {
     required Map<Expression<D>, Expression<T>> when,
     Expression<T>? orElse,
   }) {
-    if (when.isEmpty) {
-      throw ArgumentError.value(when, 'when', 'Must not be empty');
-    }
-
-    return CaseWhenExpression<T>(this, when.entries.toList(), orElse);
+    return CaseWhenExpressionWithBase<D, T>(
+      this,
+      cases: when.entries.map((e) => CaseWhen(e.key, then: e.value)),
+      orElse: orElse,
+    );
   }
 
   /// Evaluates to `this` if [predicate] is true, otherwise evaluates to [ifFalse].
@@ -456,10 +480,35 @@ class _CastInSqlExpression<D1 extends Object, D2 extends Object>
   @override
   void writeInto(GenerationContext context) {
     final type = DriftSqlType.forType<D2>();
+    if (type == DriftSqlType.any) {
+      inner.writeInto(context); // No need to cast
+    }
+
+    final String typeName;
+
+    if (context.dialect == SqlDialect.mariadb) {
+      // MariaDB has a weird cast syntax that uses different type names than the
+      // ones used in a create table statement.
+
+      // ignore: unnecessary_cast
+      typeName = switch (type as DriftSqlType<Object>) {
+        DriftSqlType.int ||
+        DriftSqlType.bigInt ||
+        DriftSqlType.bool =>
+          'INTEGER',
+        DriftSqlType.string => 'CHAR',
+        DriftSqlType.double => 'DOUBLE',
+        DriftSqlType.blob => 'BINARY',
+        DriftSqlType.dateTime => 'DATETIME',
+        DriftSqlType.any => '',
+      };
+    } else {
+      typeName = type.sqlTypeName(context);
+    }
 
     context.buffer.write('CAST(');
     inner.writeInto(context);
-    context.buffer.write(' AS ${type.sqlTypeName(context)})');
+    context.buffer.write(' AS $typeName)');
   }
 }
 
@@ -503,7 +552,7 @@ class FunctionCallExpression<R extends Object> extends Expression<R> {
 }
 
 void _checkSubquery(BaseSelectStatement statement) {
-  final columns = statement._returnedColumnCount;
+  final columns = statement._expandedColumns.length;
   if (columns != 1) {
     throw ArgumentError.value(statement, 'statement',
         'Must return exactly one column (actually returns $columns)');

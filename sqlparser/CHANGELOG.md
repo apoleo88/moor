@@ -1,3 +1,46 @@
+## 0.31.1
+
+- Add the `sqlite3_schema` table to the builtin tables supported by every
+  `SqlEngine` instance.
+- Support the `timediff` and `octet_length` functions from sqlite 3.43.0.
+
+## 0.31.0
+
+- Add `SqlEngine.parseMultiple` to parse multiple statements into one AST.
+
+## 0.30.3
+
+- Fix `WITH` clauses not being resolved for compound select statements.
+
+## 0.30.2
+
+- Fix false-positive "unknown table" errors when the same table is used in a
+  join with and then without an alias.
+
+## 0.30.1
+
+- Report syntax error for `WITH` clauses in triggers.
+
+## 0.30.0
+
+- Add `previous` and `next` fields for tokens
+
+## 0.29.0
+
+- Parser support for constructor names in `WITH` drift syntax.
+- Support resolving `IIF` functions.
+- Fix a crash when a CTE is used on an insert, update or delete statement.
+- Fix wrong column names being reported for references in subqueries and CTEs.
+
+## 0.28.1
+
+- Fix false-positive warnings about `AS` aliases in subqueries used in triggers.
+
+## 0.28.0
+
+- Support the `unhex` function added in sqlite 3.41.0
+- Support custom keyword sets when formatting SQL.
+
 ## 0.27.0
 
 - Add `mappedBy` to `ExpressionResultColumn` when parsing in drift mode.

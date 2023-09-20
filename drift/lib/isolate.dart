@@ -221,13 +221,17 @@ extension ComputeWithDriftIsolate<DB extends DatabaseConnectionUser> on DB {
   /// requiring a database is also available through [computeWithDatabase].
   @experimental
   Future<DriftIsolate> serializableConnection() async {
+    final currentlyInRootConnection = resolvedEngine is GeneratedDatabase;
     // ignore: invalid_use_of_protected_member
-    final localConnection = connection;
+    final localConnection = resolvedEngine.connection;
     final data = await localConnection.connectionData;
 
-    if (data is DriftIsolate) {
-      // The local database is already connected to an isolate, use that one
-      // directly.
+    // If we're connected to an isolate already, we can use that one directly
+    // instead of starting a short-lived drift server.
+    // However, this does not work if [serializableConnection] is called in a
+    // transaction zone, since the top-level connection could be blocked waiting
+    // for the transaction (as transactions can't be concurrent in sqlite3).
+    if (data is DriftIsolate && currentlyInRootConnection) {
       return data;
     } else {
       // Set up a drift server acting as a proxy to the existing database
@@ -303,6 +307,17 @@ extension ComputeWithDriftIsolate<DB extends DatabaseConnectionUser> on DB {
   ///   );
   /// }
   /// ```
+  ///
+  /// Note that with the recommended setup of `NativeDatabase.createInBackground`,
+  /// drift will already use an isolate to run your SQL statements. Using
+  /// [computeWithDatabase] is beneficial when an an expensive work unit needs
+  /// to use the database, or when creating the SQL statements itself is
+  /// expensive.
+  /// In particular, note that [computeWithDatabase] does not create a second
+  /// database connection to sqlite3 - the current one is re-used. So if you're
+  /// using a synchronous database connection, using this method is unlikely to
+  /// take significant loads off the main isolate. For that reason, the use of
+  /// `NativeDatabase.createInBackground` is encouraged.
   @experimental
   Future<Ret> computeWithDatabase<Ret>({
     required FutureOr<Ret> Function(DB) computation,

@@ -49,7 +49,7 @@ At the moment, drift supports these options:
   a `UsersTableCompanion`). With this option, the name is based on the data class (so `UsersCompanion` in
   this case).
 * `use_column_name_as_json_key_when_defined_in_moor_file` (defaults to `true`): When serializing columns declared inside a
-  `.moor` (or `.drift`) file from and to json, use their sql name instead of the generated Dart getter name
+  `.drift` file from and to json, use their sql name instead of the generated Dart getter name
   (so a column named `user_name` would also use `user_name` as a json key instead of `userName`).
   You can always override the json key by using a `JSON KEY` column constraint
   (e.g. `user_name VARCHAR NOT NULL JSON KEY userName`).
@@ -76,6 +76,11 @@ At the moment, drift supports these options:
   The possible values are  `preserve`, `camelCase`, `CONSTANT_CASE`, `snake_case`, `PascalCase`, `lowercase` and `UPPERCASE` (default: `snake_case`).
 * `write_to_columns_mixins`: Whether the `toColumns` method should be written as a mixin instead of being added directly to the data class.
    This is useful when using [existing row classes]({{ 'custom_row_classes.md' | pageUrl }}), as the mixin is generated for those as well.
+* `fatal_warnings`: When enabled (defaults to `false`), warnings found by `drift_dev` in the build process (like syntax errors in SQL queries or
+  unresolved references in your Dart tables) will cause the build to fail.
+* `preamble`: This option is useful when using drift [as a standalone part builder](#using-drift-classes-in-other-builders) or when running a
+  [modular build](#modular-code-generation). In these setups, the `preamble` option defined by the [source_gen package](https://pub.dev/packages/source_gen#preamble)
+  would have no effect, which is why it has been added as an option for the drift builders.
 
 ## Assumed SQL environment
 
@@ -107,6 +112,36 @@ For instance, using more than one [upsert clause](https://sqlite.org/lang_upsert
 in 3.34, so an error would be reported.
 Currently, the generator can't provide compatibility checks for versions below 3.34, which is the
 minimum version needed in options.
+
+### Multi-dialect code generation
+
+Thanks to community contributions, drift has in-progress support for Postgres and MariaDB.
+You can change the `dialect` option to `postgres` or `mariadb` to generate code for those
+database management systems.
+
+In some cases, your generated code might have to support more than one DBMS. For instance,
+you might want to share database code between your backend and a Flutter app. Or maybe
+you're writing a server that should be able to talk to both MariaDB and Postgres, depending
+on what the operator prefers.
+Drift can generate code for multiple dialects - in that case, the right SQL will be chosen
+at runtime when it makes a difference.
+
+To enable this feature, remove the `dialect` option in the `sql` block and replace it with
+a list of `dialects`:
+
+```yaml
+targets:
+  $default:
+    builders:
+      drift_dev:
+        options:
+          sql:
+            dialects:
+              - sqlite
+              - postgres
+            options:
+              version: "3.34"
+```
 
 ### Available extensions
 
@@ -261,19 +296,10 @@ By default, drift generates code from a single entrypoint - all tables, views
 and queries for a database are generated into a single part file.
 For larger projects, this file can become quite large, slowing down builds and
 the analyzer when it is re-generated.
-Starting from Drift version 2.3.0, a new, modular, build setup is available as
-an alternative for larger projects.
+Drift supports an alternative and modular code-generation mode intended as an
+alternative for larger projects.
 With this setup, drift generates multiple files and automatically manages
 imports between them.
-
-{% block "blocks/alert" title="Experimental" color="success" %}
-Please be aware that modular code generation is a drift feature in active
-development. It is not fully stable yet, with minor breaking changes to be
-expected until Drift 2.4.0.
-
-For those interested in trying this out - please report all issues or
-inconveniences you run into. Your feedback is cruicial to stabilize this feature!
-{% endblock %}
 
 As a motivating example, consider a large drift project with many tables or
 views being split across different files:

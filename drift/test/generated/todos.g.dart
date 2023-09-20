@@ -641,16 +641,13 @@ class $UsersTable extends Users with TableInfo<$UsersTable, User> {
   static const VerificationMeta _isAwesomeMeta =
       const VerificationMeta('isAwesome');
   @override
-  late final GeneratedColumn<bool> isAwesome =
-      GeneratedColumn<bool>('is_awesome', aliasedName, false,
-          type: DriftSqlType.bool,
-          requiredDuringInsert: false,
-          defaultConstraints: GeneratedColumn.constraintsDependsOnDialect({
-            SqlDialect.sqlite: 'CHECK ("is_awesome" IN (0, 1))',
-            SqlDialect.mysql: '',
-            SqlDialect.postgres: '',
-          }),
-          defaultValue: const Constant(true));
+  late final GeneratedColumn<bool> isAwesome = GeneratedColumn<bool>(
+      'is_awesome', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("is_awesome" IN (0, 1))'),
+      defaultValue: const Constant(true));
   static const VerificationMeta _profilePictureMeta =
       const VerificationMeta('profilePicture');
   @override
@@ -1047,29 +1044,36 @@ class SharedTodo extends DataClass implements Insertable<SharedTodo> {
 class SharedTodosCompanion extends UpdateCompanion<SharedTodo> {
   final Value<int> todo;
   final Value<int> user;
+  final Value<int> rowid;
   const SharedTodosCompanion({
     this.todo = const Value.absent(),
     this.user = const Value.absent(),
+    this.rowid = const Value.absent(),
   });
   SharedTodosCompanion.insert({
     required int todo,
     required int user,
+    this.rowid = const Value.absent(),
   })  : todo = Value(todo),
         user = Value(user);
   static Insertable<SharedTodo> custom({
     Expression<int>? todo,
     Expression<int>? user,
+    Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (todo != null) 'todo': todo,
       if (user != null) 'user': user,
+      if (rowid != null) 'rowid': rowid,
     });
   }
 
-  SharedTodosCompanion copyWith({Value<int>? todo, Value<int>? user}) {
+  SharedTodosCompanion copyWith(
+      {Value<int>? todo, Value<int>? user, Value<int>? rowid}) {
     return SharedTodosCompanion(
       todo: todo ?? this.todo,
       user: user ?? this.user,
+      rowid: rowid ?? this.rowid,
     );
   }
 
@@ -1082,6 +1086,9 @@ class SharedTodosCompanion extends UpdateCompanion<SharedTodo> {
     if (user.present) {
       map['user'] = Variable<int>(user.value);
     }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
     return map;
   }
 
@@ -1089,7 +1096,8 @@ class SharedTodosCompanion extends UpdateCompanion<SharedTodo> {
   String toString() {
     return (StringBuffer('SharedTodosCompanion(')
           ..write('todo: $todo, ')
-          ..write('user: $user')
+          ..write('user: $user, ')
+          ..write('rowid: $rowid')
           ..write(')'))
         .toString();
   }
@@ -1195,17 +1203,20 @@ class TableWithoutPKCompanion extends UpdateCompanion<CustomRowClass> {
   final Value<double> someFloat;
   final Value<BigInt?> webSafeInt;
   final Value<MyCustomObject> custom;
+  final Value<int> rowid;
   const TableWithoutPKCompanion({
     this.notReallyAnId = const Value.absent(),
     this.someFloat = const Value.absent(),
     this.webSafeInt = const Value.absent(),
     this.custom = const Value.absent(),
+    this.rowid = const Value.absent(),
   });
   TableWithoutPKCompanion.insert({
     required int notReallyAnId,
     required double someFloat,
     this.webSafeInt = const Value.absent(),
     this.custom = const Value.absent(),
+    this.rowid = const Value.absent(),
   })  : notReallyAnId = Value(notReallyAnId),
         someFloat = Value(someFloat);
   static Insertable<CustomRowClass> createCustom({
@@ -1213,12 +1224,14 @@ class TableWithoutPKCompanion extends UpdateCompanion<CustomRowClass> {
     Expression<double>? someFloat,
     Expression<BigInt>? webSafeInt,
     Expression<String>? custom,
+    Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (notReallyAnId != null) 'not_really_an_id': notReallyAnId,
       if (someFloat != null) 'some_float': someFloat,
       if (webSafeInt != null) 'web_safe_int': webSafeInt,
       if (custom != null) 'custom': custom,
+      if (rowid != null) 'rowid': rowid,
     });
   }
 
@@ -1226,12 +1239,14 @@ class TableWithoutPKCompanion extends UpdateCompanion<CustomRowClass> {
       {Value<int>? notReallyAnId,
       Value<double>? someFloat,
       Value<BigInt?>? webSafeInt,
-      Value<MyCustomObject>? custom}) {
+      Value<MyCustomObject>? custom,
+      Value<int>? rowid}) {
     return TableWithoutPKCompanion(
       notReallyAnId: notReallyAnId ?? this.notReallyAnId,
       someFloat: someFloat ?? this.someFloat,
       webSafeInt: webSafeInt ?? this.webSafeInt,
       custom: custom ?? this.custom,
+      rowid: rowid ?? this.rowid,
     );
   }
 
@@ -1251,6 +1266,9 @@ class TableWithoutPKCompanion extends UpdateCompanion<CustomRowClass> {
       final converter = $TableWithoutPKTable.$convertercustom;
       map['custom'] = Variable<String>(converter.toSql(custom.value));
     }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
     return map;
   }
 
@@ -1260,7 +1278,8 @@ class TableWithoutPKCompanion extends UpdateCompanion<CustomRowClass> {
           ..write('notReallyAnId: $notReallyAnId, ')
           ..write('someFloat: $someFloat, ')
           ..write('webSafeInt: $webSafeInt, ')
-          ..write('custom: $custom')
+          ..write('custom: $custom, ')
+          ..write('rowid: $rowid')
           ..write(')'))
         .toString();
   }
@@ -1268,9 +1287,7 @@ class TableWithoutPKCompanion extends UpdateCompanion<CustomRowClass> {
 
 class _$CustomRowClassInsertable implements Insertable<CustomRowClass> {
   CustomRowClass _object;
-
   _$CustomRowClassInsertable(this._object);
-
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     return TableWithoutPKCompanion(
@@ -1400,23 +1417,30 @@ class PureDefault extends DataClass implements Insertable<PureDefault> {
 
 class PureDefaultsCompanion extends UpdateCompanion<PureDefault> {
   final Value<MyCustomObject?> txt;
+  final Value<int> rowid;
   const PureDefaultsCompanion({
     this.txt = const Value.absent(),
+    this.rowid = const Value.absent(),
   });
   PureDefaultsCompanion.insert({
     this.txt = const Value.absent(),
+    this.rowid = const Value.absent(),
   });
   static Insertable<PureDefault> custom({
     Expression<String>? txt,
+    Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (txt != null) 'insert': txt,
+      if (rowid != null) 'rowid': rowid,
     });
   }
 
-  PureDefaultsCompanion copyWith({Value<MyCustomObject?>? txt}) {
+  PureDefaultsCompanion copyWith(
+      {Value<MyCustomObject?>? txt, Value<int>? rowid}) {
     return PureDefaultsCompanion(
       txt: txt ?? this.txt,
+      rowid: rowid ?? this.rowid,
     );
   }
 
@@ -1427,13 +1451,17 @@ class PureDefaultsCompanion extends UpdateCompanion<PureDefault> {
       final converter = $PureDefaultsTable.$convertertxtn;
       map['insert'] = Variable<String>(converter.toSql(txt.value));
     }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
     return map;
   }
 
   @override
   String toString() {
     return (StringBuffer('PureDefaultsCompanion(')
-          ..write('txt: $txt')
+          ..write('txt: $txt, ')
+          ..write('rowid: $rowid')
           ..write(')'))
         .toString();
   }
@@ -1516,7 +1544,7 @@ class $CategoryTodoCountViewView
   @override
   String get entityName => 'category_todo_count_view';
   @override
-  String? get createViewStmt => null;
+  Map<SqlDialect, String>? get createViewStatements => null;
   @override
   $CategoryTodoCountViewView get asDslTable => this;
   @override
@@ -1627,7 +1655,7 @@ class $TodoWithCategoryViewView
   @override
   String get entityName => 'todo_with_category_view';
   @override
-  String? get createViewStmt => null;
+  Map<SqlDialect, String>? get createViewStatements => null;
   @override
   $TodoWithCategoryViewView get asDslTable => this;
   @override
@@ -1681,21 +1709,19 @@ abstract class _$TodoDb extends GeneratedDatabase {
         readsFrom: {
           categories,
           todosTable,
-        }).map((QueryRow row) {
-      return AllTodosWithCategoryResult(
-        row: row,
-        id: row.read<int>('id'),
-        title: row.readNullable<String>('title'),
-        content: row.read<String>('content'),
-        targetDate: row.readNullable<DateTime>('target_date'),
-        category: row.readNullable<int>('category'),
-        status: NullAwareTypeConverter.wrapFromSql(
-            $TodosTableTable.$converterstatus,
-            row.readNullable<String>('status')),
-        catId: row.read<int>('catId'),
-        catDesc: row.read<String>('catDesc'),
-      );
-    });
+        }).map((QueryRow row) => AllTodosWithCategoryResult(
+          row: row,
+          id: row.read<int>('id'),
+          title: row.readNullable<String>('title'),
+          content: row.read<String>('content'),
+          targetDate: row.readNullable<DateTime>('target_date'),
+          category: row.readNullable<int>('category'),
+          status: NullAwareTypeConverter.wrapFromSql(
+              $TodosTableTable.$converterstatus,
+              row.readNullable<String>('status')),
+          catId: row.read<int>('catId'),
+          catDesc: row.read<String>('catDesc'),
+        ));
   }
 
   Future<int> deleteTodoById(int var1) {
@@ -1813,9 +1839,9 @@ class AllTodosWithCategoryResult extends CustomResultSet {
 
 mixin _$SomeDaoMixin on DatabaseAccessor<TodoDb> {
   $UsersTable get users => attachedDatabase.users;
-  $SharedTodosTable get sharedTodos => attachedDatabase.sharedTodos;
   $CategoriesTable get categories => attachedDatabase.categories;
   $TodosTableTable get todosTable => attachedDatabase.todosTable;
+  $SharedTodosTable get sharedTodos => attachedDatabase.sharedTodos;
   $TodoWithCategoryViewView get todoWithCategoryView =>
       attachedDatabase.todoWithCategoryView;
   Selectable<TodoEntry> todosForUser({required int user}) {

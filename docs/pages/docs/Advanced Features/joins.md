@@ -186,3 +186,68 @@ The "only" means that drift will only report columns we added via "addColumns". 
 all columns from the table would be selected, which is what you'd usually need.
 
 {% include "blocks/snippet" snippets = snippets name = 'averageItemLength' %}
+
+## Using selects as inserts
+
+In SQL, an `INSERT INTO SELECT` statement can be used to efficiently insert the rows from a `SELECT`
+statement into a table.
+It is possible to construct these statements in drift with the `insertFromSelect` method.
+This example shows how that method is used to construct a statement that creates a new category
+for each todo entry that didn't have one assigned before:
+
+{% include "blocks/snippet" snippets = snippets name = 'createCategoryForUnassignedTodoEntries' %}
+
+The first parameter for `insertFromSelect` is the select statement statement to use as a source.
+Then, the `columns` map maps columns from the table in which rows are inserted to columns from the
+select statement.
+In the example, the `newDescription` expression as added as a column to the query.
+Then, the map entry `categories.description: newDescription` is used so that the `description` column
+for new category rows gets set to that expression.
+
+## Subqueries
+
+Starting from drift 2.11, you can use `Subquery` to use an existing select statement as part of more
+complex join.
+
+This snippet uses `Subquery` to count how many of the top-10 todo items (by length of their title) are
+in each category.
+It does this by first creating a select statement for the top-10 items (but not executing it), and then
+joining this select statement onto a larger one grouping by category:
+
+{% include "blocks/snippet" snippets = snippets name = 'subquery' %}
+
+Any statement can be used as a subquery. But be aware that, unlike [subquery expressions]({{ 'expressions.md#scalar-subqueries' | pageUrl }}), full subqueries can't use tables from the outer select statement.
+
+## JSON support
+
+{% assign json_snippet = 'package:drift_docs/snippets/queries/json.dart.excerpt.json' | readString | json_decode %}
+
+sqlite3 has great support for [JSON operators](https://sqlite.org/json1.html) that are also available
+in drift (under the additional `'package:drift/extensions/json1.dart'` import).
+JSON support is helpful when storing a dynamic structure that is best represented with JSON, or when
+you have an existing structure (perhaps because you're migrating from a document-based storage)
+that you need to support.
+
+As an example, consider a contact book application that started with a JSON structure to store
+contacts:
+
+{% include "blocks/snippet" snippets = json_snippet name = 'existing' %}
+
+To easily store this contact representation in a drift database, one could use a JSON column:
+
+{% include "blocks/snippet" snippets = json_snippet name = 'contacts' %}
+
+Note the `name` column as well: It uses `generatedAs` with the `jsonExtract` function to
+extract the `name` field from the JSON value on the fly.
+The full syntax for JSON path arguments is explained on the [sqlite3 website](https://sqlite.org/json1.html#path_arguments).
+
+To make the example more complex, let's look at another table storing a log of phone calls:
+
+{% include "blocks/snippet" snippets = json_snippet name = 'calls' %}
+
+Let's say we wanted to find the contact for each call, if there is any with a matching phone number.
+For this to be expressible in SQL, each `contacts` row would somehow have to be expanded into a row
+for each stored phone number.
+Luckily, the `json_each` function in sqlite3 can do exactly that, and drift exposes it:
+
+{% include "blocks/snippet" snippets = json_snippet name = 'calls-with-contacts' %}

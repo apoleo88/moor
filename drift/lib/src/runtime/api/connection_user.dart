@@ -217,7 +217,7 @@ abstract class DatabaseConnectionUser {
   /// ```dart
   /// Stream<num> watchAverageCommentLength() {
   ///   final avgLength = comments.content.length.avg();
-  ///   final query = selectWithoutResults(comments)
+  ///   final query = selectOnly(comments)
   ///     ..addColumns([avgLength]);
   ///
   ///   return query.map((row) => row.read(avgLength)).watchSingle();
@@ -343,12 +343,17 @@ abstract class DatabaseConnectionUser {
     return result;
   }
 
-  /// Creates a custom select statement from the given sql [query]. To run the
-  /// query once, use [Selectable.get]. For an auto-updating streams, set the
-  /// set of tables the ready [readsFrom] and use [Selectable.watch]. If you
-  /// know the query will never emit more than one row, you can also use
-  /// `getSingle` and `SelectableUtils.watchSingle` which return the item
-  /// directly without wrapping it into a list.
+  /// Creates a custom select statement from the given sql [query].
+  ///
+  /// The query can be run once by calling [Selectable.get].
+  ///
+  /// For an auto-updating query stream, the [readsFrom] parameter needs to be
+  /// set to the tables the SQL statement reads from - drift can't infer it
+  /// automatically like for other queries constructed with its Dart API.
+  /// When, [Selectable.watch] can be used to construct an updating stream.
+  ///
+  /// For queries that are known to only return a single row,
+  /// [Selectable.getSingle] and [Selectable.watchSingle] can be used as well.
   ///
   /// If you use variables in your query (for instance with "?"), they will be
   /// bound to the [variables] you specify on this query.
@@ -529,15 +534,14 @@ abstract class DatabaseConnectionUser {
     return runZoned(calculation, zoneValues: {_zoneRootUserKey: user});
   }
 
-  /// Will be used by generated code to resolve inline Dart components in sql.
+  /// Will be used by generated code to resolve inline Dart components in sql by
+  /// writing the [component].
   @protected
   GenerationContext $write(Component component,
       {bool? hasMultipleTables, int? startIndex}) {
     final context = GenerationContext.fromDb(this)
-      ..explicitVariableIndex = startIndex;
-    if (hasMultipleTables != null) {
-      context.hasMultipleTables = hasMultipleTables;
-    }
+      ..explicitVariableIndex = startIndex
+      ..hasMultipleTables = hasMultipleTables ?? false;
     component.writeInto(context);
 
     return context;
@@ -562,10 +566,21 @@ abstract class DatabaseConnectionUser {
   /// Used by generated code to expand array variables.
   String $expandVar(int start, int amount) {
     final buffer = StringBuffer();
-    final mark = executor.dialect == SqlDialect.postgres ? '@' : '?';
+
+    final variableSymbol = switch (executor.dialect) {
+      SqlDialect.postgres => r'$',
+      _ => '?',
+    };
+    final supportsIndexedParameters =
+        executor.dialect.supportsIndexedParameters;
 
     for (var x = 0; x < amount; x++) {
-      buffer.write('$mark${start + x}');
+      if (supportsIndexedParameters) {
+        buffer.write('$variableSymbol${start + x}');
+      } else {
+        buffer.write(variableSymbol);
+      }
+
       if (x != amount - 1) {
         buffer.write(', ');
       }

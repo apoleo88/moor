@@ -205,7 +205,7 @@ class PostsCompanion extends i0.UpdateCompanion<i1.Post> {
 
   @override
   String toString() {
-    return (StringBuffer('i1.PostsCompanion(')
+    return (StringBuffer('PostsCompanion(')
           ..write('id: $id, ')
           ..write('author: $author, ')
           ..write('content: $content')
@@ -343,29 +343,36 @@ class Like extends i0.DataClass implements i0.Insertable<i1.Like> {
 class LikesCompanion extends i0.UpdateCompanion<i1.Like> {
   final i0.Value<int> post;
   final i0.Value<int> likedBy;
+  final i0.Value<int> rowid;
   const LikesCompanion({
     this.post = const i0.Value.absent(),
     this.likedBy = const i0.Value.absent(),
+    this.rowid = const i0.Value.absent(),
   });
   LikesCompanion.insert({
     required int post,
     required int likedBy,
+    this.rowid = const i0.Value.absent(),
   })  : post = i0.Value(post),
         likedBy = i0.Value(likedBy);
   static i0.Insertable<i1.Like> custom({
     i0.Expression<int>? post,
     i0.Expression<int>? likedBy,
+    i0.Expression<int>? rowid,
   }) {
     return i0.RawValuesInsertable({
       if (post != null) 'post': post,
       if (likedBy != null) 'liked_by': likedBy,
+      if (rowid != null) 'rowid': rowid,
     });
   }
 
-  i1.LikesCompanion copyWith({i0.Value<int>? post, i0.Value<int>? likedBy}) {
+  i1.LikesCompanion copyWith(
+      {i0.Value<int>? post, i0.Value<int>? likedBy, i0.Value<int>? rowid}) {
     return i1.LikesCompanion(
       post: post ?? this.post,
       likedBy: likedBy ?? this.likedBy,
+      rowid: rowid ?? this.rowid,
     );
   }
 
@@ -378,14 +385,18 @@ class LikesCompanion extends i0.UpdateCompanion<i1.Like> {
     if (likedBy.present) {
       map['liked_by'] = i0.Variable<int>(likedBy.value);
     }
+    if (rowid.present) {
+      map['rowid'] = i0.Variable<int>(rowid.value);
+    }
     return map;
   }
 
   @override
   String toString() {
-    return (StringBuffer('i1.LikesCompanion(')
+    return (StringBuffer('LikesCompanion(')
           ..write('post: $post, ')
-          ..write('likedBy: $likedBy')
+          ..write('likedBy: $likedBy, ')
+          ..write('rowid: $rowid')
           ..write(')'))
         .toString();
   }

@@ -534,7 +534,7 @@ class $TodoCategoryItemCountView
   @override
   String get entityName => 'todo_category_item_count';
   @override
-  String? get createViewStmt => null;
+  Map<SqlDialect, String>? get createViewStatements => null;
   @override
   $TodoCategoryItemCountView get asDslTable => this;
   @override
@@ -639,7 +639,7 @@ class $TodoItemWithCategoryNameViewView extends ViewInfo<
   @override
   String get entityName => 'customViewName';
   @override
-  String? get createViewStmt => null;
+  Map<SqlDialect, String>? get createViewStatements => null;
   @override
   $TodoItemWithCategoryNameViewView get asDslTable => this;
   @override
@@ -689,10 +689,17 @@ abstract class _$Database extends GeneratedDatabase {
       $TodoCategoryItemCountView(this);
   late final $TodoItemWithCategoryNameViewView customViewName =
       $TodoItemWithCategoryNameViewView(this);
+  late final Index itemTitle =
+      Index('item_title', 'CREATE INDEX item_title ON todo_items (title)');
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
   @override
-  List<DatabaseSchemaEntity> get allSchemaEntities =>
-      [todoCategories, todoItems, todoCategoryItemCount, customViewName];
+  List<DatabaseSchemaEntity> get allSchemaEntities => [
+        todoCategories,
+        todoItems,
+        todoCategoryItemCount,
+        customViewName,
+        itemTitle
+      ];
 }

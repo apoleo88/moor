@@ -25,6 +25,11 @@ class SqlEngine {
     }
 
     registerTable(sqliteMaster);
+    // sqlite3_schema has been added in sqlite 3.33.0 as an alias to the master
+    // table. Since 3.34.0 is the first version for which we have feature flags,
+    // we just add it unconditionally.
+    registerTable(sqliteSchema);
+
     registerTable(sqliteSequence);
   }
 
@@ -143,6 +148,18 @@ class SqlEngine {
     return ParseResult._(stmt, tokens, parser.errors, sql, null);
   }
 
+  /// Parses multiple [sql] statements, separated by a semicolon.
+  ///
+  /// You can use the [AstNode.childNodes] of the returned [ParseResult.rootNode]
+  /// to inspect the returned statements.
+  ParseResult parseMultiple(String sql) {
+    final tokens = tokenize(sql);
+    final parser = _createParser(tokens);
+
+    final ast = parser.safeStatements();
+    return ParseResult._(ast, tokens, parser.errors, sql, null);
+  }
+
   /// Parses [sql] as a list of column constraints.
   ///
   /// The [ParseResult.rootNode] will be a [ColumnDefinition] with the parsed
@@ -157,6 +174,30 @@ class SqlEngine {
         typeName: '',
         constraints: parser.columnConstraintsUntilEnd(),
       ),
+      tokens,
+      parser.errors,
+      sql,
+      null,
+    );
+  }
+
+  /// Parses [sql] as a single table constraint.
+  ///
+  /// The [ParseResult.rootNode] will either be a [TableConstraint] or an
+  /// [InvalidStatement] in case of parsing errors.
+  ParseResult parseTableConstraint(String sql) {
+    final tokens = tokenize(sql);
+    final parser = _createParser(tokens, driftExtensions: false);
+
+    AstNode? constraint;
+    try {
+      constraint = parser.tableConstraintOrNull(requireConstraint: true);
+    } on ParsingError {
+      // Ignore, will be added to parser.errors anyway
+    }
+
+    return ParseResult._(
+      constraint ?? InvalidStatement(),
       tokens,
       parser.errors,
       sql,
@@ -246,22 +287,18 @@ class SqlEngine {
     final node = context.root;
     node.scope = context.rootScope;
 
-    try {
-      AstPreparingVisitor(context: context).start(node);
+    AstPreparingVisitor(context: context).start(node);
 
-      node
-        ..acceptWithoutArg(ColumnResolver(context))
-        ..acceptWithoutArg(ReferenceResolver(context));
+    node
+      ..accept(ColumnResolver(context), const ColumnResolverContext())
+      ..accept(ReferenceResolver(context), const ReferenceResolvingContext());
 
-      final session = TypeInferenceSession(context, options);
-      final resolver = TypeResolver(session);
-      resolver.run(node);
-      context.types2 = session.results!;
+    final session = TypeInferenceSession(context, options);
+    final resolver = TypeResolver(session);
+    resolver.run(node);
+    context.types2 = session.results!;
 
-      node.acceptWithoutArg(LintingVisitor(options, context));
-    } catch (_) {
-      rethrow;
-    }
+    node.acceptWithoutArg(LintingVisitor(options, context));
   }
 }
 

@@ -9,6 +9,7 @@
 /// For more information other platforms, see [other engines](https://drift.simonbinder.eu/docs/other-engines/vm/).
 library drift.ffi;
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
@@ -31,9 +32,22 @@ export 'package:sqlite3/sqlite3.dart' show SqliteException;
 /// implementations.
 typedef DatabaseSetup = void Function(Database database);
 
+/// Signature of a function that can perform setup work on the isolate before
+/// opening the database.
+///
+/// This could be used to override libraries.
+/// For example:
+/// ```
+/// open.overrideFor(OperatingSystem.android, openCipherOnAndroid)
+/// ```
+typedef IsolateSetup = FutureOr<void> Function();
+
 /// A drift database implementation based on `dart:ffi`, running directly in a
 /// Dart VM or an AOT compiled Dart/Flutter application.
 class NativeDatabase extends DelegatedDatabase {
+  // when changing this, also update the documentation in `drift_vm_database_factory`.
+  static const _cacheStatementsByDefault = false;
+
   NativeDatabase._(DatabaseDelegate delegate, bool logStatements)
       : super(delegate, isSequential: false, logStatements: logStatements);
 
@@ -43,14 +57,30 @@ class NativeDatabase extends DelegatedDatabase {
   /// {@template drift_vm_database_factory}
   /// If [logStatements] is true (defaults to `false`), generated sql statements
   /// will be printed before executing. This can be useful for debugging.
+  ///
+  /// The [cachePreparedStatements] flag (defaults to `false`) controls whether
+  /// drift will cache prepared statement objects, which improves performance as
+  /// sqlite3 doesn't have to parse statements that are frequently used multiple
+  /// times. This will be the default in the next minor drift version.
+  ///
   /// The optional [setup] function can be used to perform a setup just after
   /// the database is opened, before drift is fully ready. This can be used to
   /// add custom user-defined sql functions or to provide encryption keys in
   /// SQLCipher implementations.
   /// {@endtemplate}
-  factory NativeDatabase(File file,
-      {bool logStatements = false, DatabaseSetup? setup}) {
-    return NativeDatabase._(_NativeDelegate(file, setup), logStatements);
+  factory NativeDatabase(
+    File file, {
+    bool logStatements = false,
+    DatabaseSetup? setup,
+    bool cachePreparedStatements = _cacheStatementsByDefault,
+  }) {
+    return NativeDatabase._(
+        _NativeDelegate(
+          file,
+          setup,
+          cachePreparedStatements,
+        ),
+        logStatements);
   }
 
   /// Creates a database storing its result in [file].
@@ -70,10 +100,20 @@ class NativeDatabase extends DelegatedDatabase {
   /// __Important limitations__: If the [setup] parameter is given, it must be
   /// a static or top-level function. The reason is that it is executed on
   /// another isolate.
-  static QueryExecutor createInBackground(File file,
-      {bool logStatements = false, DatabaseSetup? setup}) {
-    return createBackgroundConnection(file,
-        logStatements: logStatements, setup: setup);
+  static QueryExecutor createInBackground(
+    File file, {
+    bool logStatements = false,
+    bool cachePreparedStatements = _cacheStatementsByDefault,
+    DatabaseSetup? setup,
+    IsolateSetup? isolateSetup,
+  }) {
+    return createBackgroundConnection(
+      file,
+      logStatements: logStatements,
+      setup: setup,
+      isolateSetup: isolateSetup,
+      cachePreparedStatements: cachePreparedStatements,
+    );
   }
 
   /// Like [createInBackground], except that it returns the whole
@@ -81,14 +121,25 @@ class NativeDatabase extends DelegatedDatabase {
   ///
   /// This creates a database writing data to the given [file]. The database
   /// runs in a background isolate and is stopped when closed.
-  static DatabaseConnection createBackgroundConnection(File file,
-      {bool logStatements = false, DatabaseSetup? setup}) {
+  static DatabaseConnection createBackgroundConnection(
+    File file, {
+    bool logStatements = false,
+    DatabaseSetup? setup,
+    IsolateSetup? isolateSetup,
+    bool cachePreparedStatements = _cacheStatementsByDefault,
+  }) {
     return DatabaseConnection.delayed(Future.sync(() async {
       final receiveIsolate = ReceivePort();
       await Isolate.spawn(
         _NativeIsolateStartup.start,
         _NativeIsolateStartup(
-            file.absolute.path, logStatements, setup, receiveIsolate.sendPort),
+          file.absolute.path,
+          logStatements,
+          cachePreparedStatements,
+          setup,
+          isolateSetup,
+          receiveIsolate.sendPort,
+        ),
         debugName: 'Drift isolate worker for ${file.path}',
       );
 
@@ -102,9 +153,15 @@ class NativeDatabase extends DelegatedDatabase {
   /// Creates an in-memory database won't persist its changes on disk.
   ///
   /// {@macro drift_vm_database_factory}
-  factory NativeDatabase.memory(
-      {bool logStatements = false, DatabaseSetup? setup}) {
-    return NativeDatabase._(_NativeDelegate(null, setup), logStatements);
+  factory NativeDatabase.memory({
+    bool logStatements = false,
+    DatabaseSetup? setup,
+    bool cachePreparedStatements = _cacheStatementsByDefault,
+  }) {
+    return NativeDatabase._(
+      _NativeDelegate(null, setup, cachePreparedStatements),
+      logStatements,
+    );
   }
 
   /// Creates a drift executor for an opened [database] from the `sqlite3`
@@ -119,12 +176,20 @@ class NativeDatabase extends DelegatedDatabase {
   /// internally when running [integration tests for migrations](https://drift.simonbinder.eu/docs/advanced-features/migrations/#verifying-migrations).
   ///
   /// {@macro drift_vm_database_factory}
-  factory NativeDatabase.opened(Database database,
-      {bool logStatements = false,
-      DatabaseSetup? setup,
-      bool closeUnderlyingOnClose = true}) {
+  factory NativeDatabase.opened(
+    Database database, {
+    bool logStatements = false,
+    DatabaseSetup? setup,
+    bool closeUnderlyingOnClose = true,
+    bool cachePreparedStatements = _cacheStatementsByDefault,
+  }) {
     return NativeDatabase._(
-        _NativeDelegate.opened(database, setup, closeUnderlyingOnClose),
+        _NativeDelegate.opened(
+          database,
+          setup,
+          closeUnderlyingOnClose,
+          cachePreparedStatements,
+        ),
         logStatements);
   }
 
@@ -181,12 +246,24 @@ class NativeDatabase extends DelegatedDatabase {
 class _NativeDelegate extends Sqlite3Delegate<Database> {
   final File? file;
 
-  _NativeDelegate(this.file, DatabaseSetup? setup) : super(setup);
+  _NativeDelegate(this.file, DatabaseSetup? setup, bool cachePreparedStatements)
+      : super(
+          setup,
+          cachePreparedStatements: cachePreparedStatements,
+        );
 
   _NativeDelegate.opened(
-      Database db, DatabaseSetup? setup, bool closeUnderlyingWhenClosed)
-      : file = null,
-        super.opened(db, setup, closeUnderlyingWhenClosed);
+    Database db,
+    DatabaseSetup? setup,
+    bool closeUnderlyingWhenClosed,
+    bool cachePreparedStatements,
+  )   : file = null,
+        super.opened(
+          db,
+          setup,
+          closeUnderlyingWhenClosed,
+          cachePreparedStatements: cachePreparedStatements,
+        );
 
   @override
   Database openDatabase() {
@@ -242,6 +319,8 @@ class _NativeDelegate extends Sqlite3Delegate<Database> {
 
   @override
   Future<void> close() async {
+    await super.close();
+
     if (closeUnderlyingWhenClosed) {
       try {
         tracker.markClosed(database);
@@ -257,17 +336,27 @@ class _NativeDelegate extends Sqlite3Delegate<Database> {
 class _NativeIsolateStartup {
   final String path;
   final bool enableLogs;
+  final bool cachePreparedStatements;
   final DatabaseSetup? setup;
+  final IsolateSetup? isolateSetup;
   final SendPort sendServer;
 
   _NativeIsolateStartup(
-      this.path, this.enableLogs, this.setup, this.sendServer);
+    this.path,
+    this.enableLogs,
+    this.cachePreparedStatements,
+    this.setup,
+    this.isolateSetup,
+    this.sendServer,
+  );
 
-  static void start(_NativeIsolateStartup startup) {
+  static Future<void> start(_NativeIsolateStartup startup) async {
+    await startup.isolateSetup?.call();
     final isolate = DriftIsolate.inCurrent(() {
       return DatabaseConnection(NativeDatabase(
         File(startup.path),
         logStatements: startup.enableLogs,
+        cachePreparedStatements: startup.cachePreparedStatements,
         setup: startup.setup,
       ));
     });

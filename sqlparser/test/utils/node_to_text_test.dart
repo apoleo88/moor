@@ -3,7 +3,11 @@ import 'package:sqlparser/src/utils/ast_equality.dart';
 import 'package:sqlparser/utils/node_to_text.dart';
 import 'package:test/test.dart';
 
-enum _ParseKind { statement, driftFile }
+enum _ParseKind {
+  statement,
+  driftFile,
+  multipleStatements,
+}
 
 void main() {
   final engine =
@@ -20,6 +24,9 @@ void main() {
           break;
         case _ParseKind.driftFile:
           result = engine.parseDriftFile(input);
+          break;
+        case _ParseKind.multipleStatements:
+          result = engine.parseMultiple(input);
           break;
       }
 
@@ -147,6 +154,12 @@ CREATE TABLE IF NOT EXISTS my_table(
   foo INTEGER NOT NULL PRIMARY KEY ASC
 ) WITHOUT ROWID, STRICT;
       ''');
+      });
+
+      test('with existing row class', () {
+        testFormat('''
+CREATE TABLE foo (bar INTEGER NOT NULL PRIMARY KEY) With FooData.myConstructor;
+''');
       });
 
       test('virtual', () {
@@ -592,5 +605,20 @@ COMMIT TRANSACTION;
 
   test('does not format invalid statements', () {
     expect(InvalidStatement().toSql, throwsUnsupportedError);
+  });
+
+  test('multiple statements', () {
+    testFormat('''
+CREATE TABLE my_table (
+  id INTEGER NOT NULL PRIMARY KEY,
+  another TEXT
+) STRICT;
+
+BEGIN;
+
+INSERT INTO foo (bar, baz) VALUES ('hi', 3);
+
+COMMIT;
+''', kind: _ParseKind.multipleStatements);
   });
 }

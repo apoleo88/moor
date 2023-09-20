@@ -580,23 +580,30 @@ class TextEntrie extends DataClass implements Insertable<TextEntrie> {
 
 class TextEntriesCompanion extends UpdateCompanion<TextEntrie> {
   final Value<String> description;
+  final Value<int> rowid;
   const TextEntriesCompanion({
     this.description = const Value.absent(),
+    this.rowid = const Value.absent(),
   });
   TextEntriesCompanion.insert({
     required String description,
+    this.rowid = const Value.absent(),
   }) : description = Value(description);
   static Insertable<TextEntrie> custom({
     Expression<String>? description,
+    Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (description != null) 'description': description,
+      if (rowid != null) 'rowid': rowid,
     });
   }
 
-  TextEntriesCompanion copyWith({Value<String>? description}) {
+  TextEntriesCompanion copyWith(
+      {Value<String>? description, Value<int>? rowid}) {
     return TextEntriesCompanion(
       description: description ?? this.description,
+      rowid: rowid ?? this.rowid,
     );
   }
 
@@ -606,13 +613,17 @@ class TextEntriesCompanion extends UpdateCompanion<TextEntrie> {
     if (description.present) {
       map['description'] = Variable<String>(description.value);
     }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
     return map;
   }
 
   @override
   String toString() {
     return (StringBuffer('TextEntriesCompanion(')
-          ..write('description: $description')
+          ..write('description: $description, ')
+          ..write('rowid: $rowid')
           ..write(')'))
         .toString();
   }
@@ -639,15 +650,13 @@ abstract class _$AppDatabase extends GeneratedDatabase {
         readsFrom: {
           todoEntries,
           categories,
-        }).map((QueryRow row) {
-      return CategoriesWithCountResult(
-        id: row.readNullable<int>('id'),
-        name: row.readNullable<String>('name'),
-        color: NullAwareTypeConverter.wrapFromSql(
-            $CategoriesTable.$convertercolor, row.readNullable<int>('color')),
-        amount: row.read<int>('amount'),
-      );
-    });
+        }).map((QueryRow row) => CategoriesWithCountResult(
+          id: row.readNullable<int>('id'),
+          name: row.readNullable<String>('name'),
+          color: NullAwareTypeConverter.wrapFromSql(
+              $CategoriesTable.$convertercolor, row.readNullable<int>('color')),
+          amount: row.read<int>('amount'),
+        ));
   }
 
   Selectable<SearchResult> _search(String query) {
@@ -660,12 +669,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
           textEntries,
           todoEntries,
           categories,
-        }).asyncMap((QueryRow row) async {
-      return SearchResult(
-        todos: await todoEntries.mapFromRow(row, tablePrefix: 'nested_0'),
-        cat: await categories.mapFromRowOrNull(row, tablePrefix: 'nested_1'),
-      );
-    });
+        }).asyncMap((QueryRow row) async => SearchResult(
+          todos: await todoEntries.mapFromRow(row, tablePrefix: 'nested_0'),
+          cat: await categories.mapFromRowOrNull(row, tablePrefix: 'nested_1'),
+        ));
   }
 
   @override

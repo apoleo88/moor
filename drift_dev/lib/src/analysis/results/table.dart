@@ -49,9 +49,19 @@ class DriftTable extends DriftElementWithResultSet {
   /// when creating the `CREATE TABLE` statement at runtime.
   final bool writeDefaultConstraints;
 
-  /// When non-null, the generated table class will override the
+  /// When non-empty, the generated table class will override the
   /// `customConstraints` getter in the table class with this value.
   final List<String> overrideTableConstraints;
+
+  /// The names of indices that have been attached to this table using the
+  /// `@TableIndex` annotation in drift.
+  ///
+  /// This field only has the purpose of implicitly adding these indices to each
+  /// database adding this table, so that code for that index will get generated
+  /// without an explicit reference.
+  final List<String> attachedIndices;
+
+  DriftColumn? _rowIdColumn;
 
   DriftTable(
     super.id,
@@ -69,7 +79,22 @@ class DriftTable extends DriftElementWithResultSet {
     this.virtualTableData,
     this.writeDefaultConstraints = true,
     this.overrideTableConstraints = const [],
-  });
+    this.attachedIndices = const [],
+  }) {
+    _rowIdColumn = DriftColumn(
+      sqlType: DriftSqlType.int,
+      nullable: false,
+      nameInSql: 'rowid',
+      nameInDart: 'rowid',
+      declaration: declaration,
+      isImplicitRowId: true,
+    )..owner = this;
+  }
+
+  late final DriftColumn? rowid = _findRowId();
+
+  @override
+  DriftElementKind get kind => DriftElementKind.table;
 
   /// Whether this is a virtual table, created with a `CREATE VIRTUAL TABLE`
   /// statement in SQL.
@@ -93,6 +118,25 @@ class DriftTable extends DriftElementWithResultSet {
         .toSet();
   }
 
+  DriftColumn? _findRowId() {
+    if (withoutRowId) return null;
+
+    // See if we have an integer primary key as defined by
+    // https://www.sqlite.org/lang_createtable.html#rowid
+    final primaryKey = fullPrimaryKey;
+    if (primaryKey.length == 1) {
+      final column = primaryKey.single;
+      if (column.sqlType == DriftSqlType.int ||
+          column.sqlType == DriftSqlType.bigInt) {
+        // So this column is an alias for the rowid
+        return column;
+      }
+    }
+
+    // Otherwise, expose the implicit rowid column.
+    return _rowIdColumn;
+  }
+
   /// Determines whether [column] would be required for inserts performed via
   /// companions.
   bool isColumnRequiredForInsert(DriftColumn column) {
@@ -106,15 +150,14 @@ class DriftTable extends DriftElementWithResultSet {
       return false;
     }
 
-    // A column isn't required if it's an alias for the rowid, as explained
-    // at https://www.sqlite.org/lang_createtable.html#rowid
-    final fullPk = fullPrimaryKey;
-    final isAliasForRowId = !withoutRowId &&
-        column.sqlType == DriftSqlType.int &&
-        fullPk.length == 1 &&
-        fullPk.single == column;
+    if (rowid == column) {
+      // If the column is an alias for the rowid, it will get set automatically
+      // by sqlite and isn't required for inserts either.
+      return false;
+    }
 
-    return !isAliasForRowId;
+    // In other cases, we need a value for inserts into the table.
+    return true;
   }
 
   @override
@@ -138,21 +181,21 @@ class DriftTable extends DriftElementWithResultSet {
       '\$${className}Table';
 }
 
-abstract class DriftTableConstraint {}
+sealed class DriftTableConstraint {}
 
-class UniqueColumns extends DriftTableConstraint {
+final class UniqueColumns extends DriftTableConstraint {
   final Set<DriftColumn> uniqueSet;
 
   UniqueColumns(this.uniqueSet);
 }
 
-class PrimaryKeyColumns extends DriftTableConstraint {
+final class PrimaryKeyColumns extends DriftTableConstraint {
   final Set<DriftColumn> primaryKey;
 
   PrimaryKeyColumns(this.primaryKey);
 }
 
-class ForeignKeyTable extends DriftTableConstraint {
+final class ForeignKeyTable extends DriftTableConstraint {
   final List<DriftColumn> localColumns;
   final DriftTable otherTable;
 
@@ -182,6 +225,12 @@ class VirtualTableData {
   final List<String> moduleArguments;
 
   final RecognizedVirtualTableModule? recognized;
+
+  /// The module and the arguments in a single string, suitable for `CREATE
+  /// VIRTUAL TABLE` statements.
+  String get moduleAndArgs {
+    return '$module(${moduleArguments.join(', ')})';
+  }
 
   VirtualTableData(this.module, this.moduleArguments, this.recognized);
 }

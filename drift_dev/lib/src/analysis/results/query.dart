@@ -1,7 +1,6 @@
 import 'package:analyzer/dart/element/type.dart';
 import 'package:collection/collection.dart';
 import 'package:drift/drift.dart' show DriftSqlType, UpdateKind;
-import 'package:meta/meta.dart';
 import 'package:recase/recase.dart';
 import 'package:sqlparser/sqlparser.dart';
 
@@ -25,7 +24,7 @@ abstract class DriftQueryDeclaration {
 /// We deliberately only store very basic information here: The actual query
 /// model is very complex and hard to serialize. Further, lots of generation
 /// logic requires actual references to the AST which will be difficult to
-/// translate across serialization run.
+/// translate across serialization runs.
 /// Since SQL queries only need to be fully analyzed before generation, and
 /// since they are local elements which can't be referenced by others, there's
 /// no clear advantage wrt. incremental compilation if queries are fully
@@ -44,7 +43,7 @@ class DefinedSqlQuery extends DriftElement implements DriftQueryDeclaration {
 
   /// The existing Dart type into which a result row of this query should be
   /// mapped.
-  final DartType? existingDartType;
+  final RequestedQueryResultType? existingDartType;
 
   final QueryMode mode;
 
@@ -57,6 +56,18 @@ class DefinedSqlQuery extends DriftElement implements DriftQueryDeclaration {
 
   @override
   String get name => id.name;
+
+  @override
+  String? get dbGetterName {
+    if (mode != QueryMode.regular) {
+      return DriftSchemaElement.dbFieldName(id.name);
+    } else {
+      return null;
+    }
+  }
+
+  @override
+  DriftElementKind get kind => DriftElementKind.definedQuery;
 
   /// All in-line Dart source code literals embedded into the query.
   final List<String> dartTokens;
@@ -79,9 +90,27 @@ class DefinedSqlQuery extends DriftElement implements DriftQueryDeclaration {
   });
 }
 
+/// An existing Dart type to be used as the result of a query.
+///
+/// This is stored in [DefinedSqlQuery.existingDartType] and later validated by
+/// [MatchExistingTypeForQuery].
+class RequestedQueryResultType {
+  final DartType type;
+  final String? constructorName;
+
+  RequestedQueryResultType(this.type, this.constructorName);
+}
+
 enum QueryMode {
   regular,
   atCreate,
+}
+
+///A reference to a [FoundElement] occuring in the SQL query.
+class SyntacticElementReference {
+  final FoundElement referencedElement;
+
+  SyntacticElementReference(this.referencedElement);
 }
 
 /// A fully-resolved and analyzed SQL query.
@@ -124,39 +153,50 @@ abstract class SqlQuery {
   ///    if their index is lower than that of the array (e.g `a = ?2 AND b IN ?
   ///    AND c IN ?1`. In other words, we can expand an array without worrying
   ///    about the variables that appear after that array.
-  late List<FoundVariable> variables;
+  late final List<FoundVariable> variables =
+      elements.whereType<FoundVariable>().toList();
 
   /// The placeholders in this query which are bound and converted to sql at
   /// runtime. For instance, in `SELECT * FROM tbl WHERE $expr`, the `expr` is
   /// going to be a [FoundDartPlaceholder] with the type
   /// [ExpressionDartPlaceholderType] and [DriftSqlType.bool]. We will
   /// generate a method which has a `Expression<bool, BoolType> expr` parameter.
-  late List<FoundDartPlaceholder> placeholders;
+  late final List<FoundDartPlaceholder> placeholders =
+      elements.whereType<FoundDartPlaceholder>().toList();
 
   /// Union of [variables] and [placeholders], but in the order in which they
   /// appear inside the query.
   final List<FoundElement> elements;
 
-  /// Whether the underlying sql statement of this query operates on more than
-  /// one table. In that case, column references in Dart placeholders have to
-  /// write their table name (e.g. `foo.bar` instead of just `bar`).
-  final bool hasMultipleTables;
+  /// All references to any [FoundElement] in [elements], but in the order in
+  /// which they appear in the query.
+  ///
+  /// This is very similar to [elements] itself, except that elements referenced
+  /// multiple times are also in this list multiple times. For instance, the
+  /// query `SELECT * FROM foo WHERE ?1 ORDER BY $order LIMIT ?1` would have two
+  /// elements (the variable and the Dart template, in that order), but three
+  /// references (the variable, the template, and then the variable again).
+  final List<SyntacticElementReference> elementSources;
 
-  SqlQuery(this.name, this.elements, {bool? hasMultipleTables})
-      : hasMultipleTables = hasMultipleTables ?? false {
-    variables = elements.whereType<FoundVariable>().toList();
-    placeholders = elements.whereType<FoundDartPlaceholder>().toList();
-  }
+  SqlQuery(this.name, this.elements, this.elementSources);
 
-  bool get needsAsyncMapping {
-    final result = resultSet;
-    if (result != null) {
-      // Mapping to tables is asynchronous
-      if (result.matchingTable != null) return true;
-      if (result.nestedResults.any((e) => e is NestedResultTable)) return true;
+  /// Whether any element in [elements] has more than one definite
+  /// [elementSources] pointing to it.
+  bool get referencesAnyElementMoreThanOnce {
+    final found = <FoundElement>{};
+    for (final source in elementSources) {
+      if (!found.add(source.referencedElement)) {
+        return true;
+      }
     }
 
     return false;
+  }
+
+  bool get _useResultClassName {
+    final resultSet = this.resultSet!;
+
+    return resultSet.matchingTable == null && !resultSet.singleColumn;
   }
 
   String get resultClassName {
@@ -165,7 +205,7 @@ abstract class SqlQuery {
       throw StateError('This query ($name) does not have a result set');
     }
 
-    if (resultSet.matchingTable != null || resultSet.singleColumn) {
+    if (!_useResultClassName) {
       throw UnsupportedError('This result set does not introduce a class, '
           'either because it has a matching table or because it only returns '
           'one column.');
@@ -195,6 +235,16 @@ abstract class SqlQuery {
 
     return elements;
   }
+
+  QueryRowType queryRowType(DriftOptions options) {
+    final resultSet = this.resultSet;
+    if (resultSet == null) {
+      throw StateError('This query ($name) does not have a result set');
+    }
+
+    return resultSet.mappingToRowClass(
+        _useResultClassName ? resultClassName : null, options);
+  }
 }
 
 class SqlSelectQuery extends SqlQuery {
@@ -216,19 +266,17 @@ class SqlSelectQuery extends SqlQuery {
   bool get hasNestedQuery =>
       resultSet.nestedResults.any((e) => e is NestedResultQuery);
 
-  @override
-  bool get needsAsyncMapping => hasNestedQuery || super.needsAsyncMapping;
-
   SqlSelectQuery(
     String name,
     this.fromContext,
     this.root,
     List<FoundElement> elements,
+    List<SyntacticElementReference> elementSources,
     this.readsFrom,
     this.resultSet,
     this.requestedResultClass,
     this.nestedContainer,
-  ) : super(name, elements, hasMultipleTables: readsFrom.length > 1);
+  ) : super(name, elements, elementSources);
 
   Set<DriftTable> get readsFromTables {
     return {
@@ -249,6 +297,7 @@ class SqlSelectQuery extends SqlQuery {
       fromContext,
       root,
       elements,
+      elementSources,
       readsFrom,
       resultSet,
       null,
@@ -264,6 +313,20 @@ class SqlSelectQuery extends SqlQuery {
 class NestedQueriesContainer {
   final SelectStatement select;
   final Map<NestedQueryColumn, NestedQuery> nestedQueries = {};
+
+  /// The nested queries transformation may change the index of variables used
+  /// in a query.
+  ///
+  /// For instance, in `SELECT a, LIST(SELECT b FROM foo WHERE :a) FROM foo
+  /// WHERE :b = 2`, the variable `:a` is initially given the index 1, while
+  /// `:b` gets the index `2`.
+  /// After the transformation though, we end up with two queries `SELECT a
+  /// FROM foo WHERE :b = 2` (in which `:b` now has the index `1`), and
+  /// `SELECT b FROM foo WHERE :a`. The [Variable.resolvedIndex] will report
+  /// the correct index after the nested queries transformation, but for looking
+  /// up types it is beneficial to learn about the original index, since
+  /// variables with different indexes are considered different variables.
+  final Map<Variable, int> originalIndexForVariable = {};
 
   NestedQueriesContainer(this.select);
 
@@ -343,11 +406,11 @@ class UpdatingQuery extends SqlQuery {
     this.fromContext,
     this.root,
     List<FoundElement> elements,
+    List<SyntacticElementReference> elementSources,
     this.updates, {
     this.isInsert = false,
-    bool? hasMultipleTables,
     this.resultSet,
-  }) : super(name, elements, hasMultipleTables: hasMultipleTables);
+  }) : super(name, elements, elementSources);
 }
 
 /// A special kind of query running multiple inner queries in a transaction.
@@ -355,7 +418,11 @@ class InTransactionQuery extends SqlQuery {
   final List<SqlQuery> innerQueries;
 
   InTransactionQuery(this.innerQueries, String name)
-      : super(name, [for (final query in innerQueries) ...query.elements]);
+      : super(
+          name,
+          [for (final query in innerQueries) ...query.elements],
+          [for (final query in innerQueries) ...query.elementSources],
+        );
 
   @override
   InferredResultSet? get resultSet => null;
@@ -389,7 +456,7 @@ class InferredResultSet {
 
   /// If specified, an existing user-defined Dart type to use instead of
   /// generating another class for the result of this query.
-  final ExistingQueryRowType? existingRowType;
+  final QueryRowType? existingRowType;
 
   /// Explicitly controls that no result class should be generated for this
   /// result set.
@@ -467,26 +534,106 @@ class InferredResultSet {
     const columnsEquality = UnorderedIterableEquality(_ResultColumnEquality());
     return columnsEquality.equals(columns, other.columns);
   }
+
+  /// Returns [existingRowType], or constructs an equivalent mapping to the
+  /// default row class generated by drift_dev.
+  ///
+  /// The code to map raw result sets into structured data, be it into a class
+  /// written by a user or something generated by drift_dev, is really similar.
+  /// To share that logic in the query writer, we represent both mappings with
+  /// the same [QueryRowType] class.
+  QueryRowType mappingToRowClass(
+      String? resultClassName, DriftOptions options) {
+    final existingType = existingRowType;
+    final matchingTable = this.matchingTable;
+
+    if (existingType != null) {
+      return existingType;
+    } else if (singleColumn) {
+      final column = scalarColumns.single;
+
+      return QueryRowType(
+        rowType: AnnotatedDartCode.build((b) => b.addDriftType(column)),
+        singleValue: _columnAsArgument(column, options),
+        positionalArguments: const [],
+        namedArguments: const {},
+      );
+    } else if (matchingTable != null) {
+      return QueryRowType(
+        rowType: AnnotatedDartCode.build(
+            (b) => b.addElementRowType(matchingTable.table)),
+        singleValue: matchingTable,
+        positionalArguments: const [],
+        namedArguments: const {},
+      );
+    } else {
+      return QueryRowType(
+        rowType: AnnotatedDartCode.build((b) => b.addText(resultClassName!)),
+        singleValue: null,
+        positionalArguments: const [],
+        namedArguments: {
+          if (options.rawResultSetData) 'row': RawQueryRow(),
+          for (final column in columns)
+            dartNameFor(column): _columnAsArgument(column, options),
+        },
+      );
+    }
+  }
+
+  ArgumentForQueryRowType _columnAsArgument(
+    ResultColumn column,
+    DriftOptions options,
+  ) {
+    return switch (column) {
+      ScalarResultColumn() => column,
+      NestedResultTable() => StructuredFromNestedColumn(
+          column,
+          column.innerResultSet
+              .mappingToRowClass(column.nameForGeneratedRowClass, options),
+        ),
+      NestedResultQuery() => MappedNestedListQuery(
+          column,
+          column.query.queryRowType(options),
+        ),
+    };
+  }
 }
 
-class ExistingQueryRowType implements ArgumentForExistingQueryRowType {
+/// Describes a data type for a query, and how to map raw data into that
+/// structured type.
+class QueryRowType implements ArgumentForQueryRowType {
   final AnnotatedDartCode rowType;
+  final String constructorName;
   final bool isRecord;
 
   /// When set, instead of constructing the [rowType] from the arguments, the
   /// argument specified here can just be cast into the desired [rowType].
-  ArgumentForExistingQueryRowType? singleValue;
+  ArgumentForQueryRowType? singleValue;
 
-  final List<ArgumentForExistingQueryRowType> positionalArguments;
-  final Map<String, ArgumentForExistingQueryRowType> namedArguments;
+  final List<ArgumentForQueryRowType> positionalArguments;
+  final Map<String, ArgumentForQueryRowType> namedArguments;
 
-  ExistingQueryRowType({
+  QueryRowType({
     required this.rowType,
     required this.singleValue,
     required this.positionalArguments,
     required this.namedArguments,
+    this.constructorName = '',
     this.isRecord = false,
   });
+
+  Iterable<ArgumentForQueryRowType> get allArguments sync* {
+    if (singleValue != null) {
+      yield singleValue!;
+    } else {
+      yield* positionalArguments;
+      yield* namedArguments.values;
+    }
+  }
+
+  @override
+  bool get requiresAsynchronousContext =>
+      allArguments.any((arg) => arg.requiresAsynchronousContext);
 
   @override
   String toString() {
@@ -495,25 +642,59 @@ class ExistingQueryRowType implements ArgumentForExistingQueryRowType {
   }
 }
 
-@sealed
-abstract class ArgumentForExistingQueryRowType {}
+sealed class ArgumentForQueryRowType {
+  /// Whether the code constructing this argument may need to be in an async
+  /// context.
+  bool get requiresAsynchronousContext;
+}
 
-class MappedNestedListQuery extends ArgumentForExistingQueryRowType {
+/// An argument that just maps the raw query row.
+///
+/// This is used for generated query classes which can optionally hold a
+/// reference to the raw result set.
+class RawQueryRow extends ArgumentForQueryRowType {
+  @override
+  bool get requiresAsynchronousContext => false;
+}
+
+class StructuredFromNestedColumn extends ArgumentForQueryRowType {
+  final NestedResultTable table;
+  final QueryRowType nestedType;
+
+  bool get nullable => table.isNullable;
+
+  StructuredFromNestedColumn(this.table, this.nestedType);
+
+  @override
+  bool get requiresAsynchronousContext =>
+      nestedType.requiresAsynchronousContext;
+}
+
+class MappedNestedListQuery extends ArgumentForQueryRowType {
   final NestedResultQuery column;
-  final ExistingQueryRowType nestedType;
+  final QueryRowType nestedType;
 
   MappedNestedListQuery(this.column, this.nestedType);
+
+  // List queries run another statement and always need an asynchronous mapping.
+  @override
+  bool get requiresAsynchronousContext => true;
 }
 
 /// Information about a matching table. A table matches a query if a query
 /// selects all columns from that table, and nothing more.
 ///
 /// We still need to handle column aliases.
-class MatchingDriftTable implements ArgumentForExistingQueryRowType {
+class MatchingDriftTable implements ArgumentForQueryRowType {
   final DriftElementWithResultSet table;
   final Map<String, DriftColumn> aliasToColumn;
 
   MatchingDriftTable(this.table, this.aliasToColumn);
+
+  @override
+  // Mapping from tables is currently asynchronous because the existing data
+  // class could be an asynchronous factory.
+  bool get requiresAsynchronousContext => true;
 
   /// Whether the column alias can be ignored.
   ///
@@ -525,8 +706,7 @@ class MatchingDriftTable implements ArgumentForExistingQueryRowType {
   }
 }
 
-@sealed
-abstract class ResultColumn {
+sealed class ResultColumn {
   /// A unique name for this column in Dart.
   String dartGetterName(Iterable<String> existingNames);
 
@@ -538,8 +718,8 @@ abstract class ResultColumn {
   bool isCompatibleTo(ResultColumn other);
 }
 
-class ScalarResultColumn extends ResultColumn
-    implements HasType, ArgumentForExistingQueryRowType {
+final class ScalarResultColumn extends ResultColumn
+    implements HasType, ArgumentForQueryRowType {
   final String name;
   @override
   final DriftSqlType sqlType;
@@ -557,6 +737,9 @@ class ScalarResultColumn extends ResultColumn
 
   @override
   bool get isArray => false;
+
+  @override
+  bool get requiresAsynchronousContext => false;
 
   @override
   String dartGetterName(Iterable<String> existingNames) {
@@ -581,7 +764,7 @@ class ScalarResultColumn extends ResultColumn
 
 /// A nested result, could either be a [NestedResultTable] or a
 /// [NestedResultQuery].
-abstract class NestedResult extends ResultColumn {}
+sealed class NestedResult extends ResultColumn {}
 
 /// A nested table extracted from a `**` column.
 ///
@@ -609,14 +792,24 @@ abstract class NestedResult extends ResultColumn {}
 ///
 /// Knowing that `User` should be extracted into a field is represented with a
 /// [NestedResultTable] information as part of the result set.
-class NestedResultTable extends NestedResult
-    implements ArgumentForExistingQueryRowType {
+final class NestedResultTable extends NestedResult {
   final bool isNullable;
   final NestedStarResultColumn from;
   final String name;
-  final DriftElementWithResultSet table;
 
-  NestedResultTable(this.from, this.name, this.table, {this.isNullable = true});
+  /// The inner result set, e.g. the table or subquery/table-valued function
+  /// that the [from] column resolves to.
+  final InferredResultSet innerResultSet;
+
+  final String nameForGeneratedRowClass;
+
+  NestedResultTable({
+    required this.from,
+    required this.name,
+    required this.innerResultSet,
+    required this.nameForGeneratedRowClass,
+    this.isNullable = true,
+  });
 
   @override
   String dartGetterName(Iterable<String> existingNames) {
@@ -626,7 +819,7 @@ class NestedResultTable extends NestedResult
   /// [hashCode] that matches [isCompatibleTo] instead of `==`.
   @override
   int get compatibilityHashCode {
-    return Object.hash(name, table);
+    return Object.hash(name, innerResultSet.compatibilityHashCode);
   }
 
   /// Checks whether this is compatible to the [other] nested result, which is
@@ -636,12 +829,12 @@ class NestedResultTable extends NestedResult
     if (other is! NestedResultTable) return false;
 
     return other.name == name &&
-        other.table == table &&
+        other.innerResultSet.isCompatibleTo(other.innerResultSet) &&
         other.isNullable == isNullable;
   }
 }
 
-class NestedResultQuery extends NestedResult {
+final class NestedResultQuery extends NestedResult {
   final NestedQueryColumn from;
 
   final SqlSelectQuery query;
@@ -677,7 +870,7 @@ class NestedResultQuery extends NestedResult {
 
 /// Something in the query that needs special attention when generating code,
 /// such as variables or Dart placeholders.
-abstract class FoundElement {
+sealed class FoundElement {
   String get dartParameterName;
 
   /// The name of this element as declared in the query
@@ -704,7 +897,26 @@ class FoundVariable extends FoundElement implements HasType {
   /// three [Variable]s in its AST, but only two [FoundVariable]s, where the
   /// `?` will have index 1 and (both) `:xyz` variables will have index 2. We
   /// only report one [FoundVariable] per index.
+  ///
+  /// This [index] might change in the generator as variables are moved around.
+  /// See [originalIndex] for the original index and a further discussion of
+  /// this.
   int index;
+
+  /// The original index this variable had in the SQL string written by the
+  /// user.
+  ///
+  /// In the generator, we might have to shuffle variable indices around a bit
+  /// to support array variables which occupy a dynamic amount of variable
+  /// indices at runtime.
+  /// For instance, consider `SELECT * FROM foo WHERE a = :a OR b IN :b OR c = :c`.
+  /// Here, `:c` will have an original index of 3. Since `:b` is an array
+  /// variable though, the actual query sent to the database system at runtime
+  /// will look like `SELECT * FROM foo WHERE a = ?1 OR b IN (?3, ?4) OR c = ?2`
+  /// when a size-2 list is passed for `b`. All non-array variables have been
+  /// given indices that appear before the array to support this, so the [index]
+  /// of `c` would then be `2`.
+  final int originalIndex;
 
   /// The name of this variable, or null if it's not a named variable.
   @override
@@ -721,10 +933,8 @@ class FoundVariable extends FoundElement implements HasType {
   @override
   final bool nullable;
 
-  /// The first [Variable] in the sql statement that has this [index].
-  // todo: Do we really need to expose this? We only use [resolvedIndex], which
-  // should always be equal to [index].
-  final Variable variable;
+  @override
+  final AstNode syntacticOrigin;
 
   /// Whether this variable is an array, which will be expanded into multiple
   /// variables at runtime. We only accept queries where no explicitly numbered
@@ -746,38 +956,38 @@ class FoundVariable extends FoundElement implements HasType {
     required this.index,
     required this.name,
     required this.sqlType,
-    required this.variable,
+    required Variable variable,
     this.nullable = false,
     this.isArray = false,
     this.isRequired = false,
     this.typeConverter,
-  })  : hidden = false,
-        forCaptured = null,
-        assert(variable.resolvedIndex == index);
+  })  : originalIndex = index,
+        hidden = false,
+        syntacticOrigin = variable,
+        forCaptured = null;
 
   FoundVariable.nestedQuery({
     required this.index,
     required this.name,
     required this.sqlType,
-    required this.variable,
+    required Variable variable,
     required this.forCaptured,
-  })  : typeConverter = null,
+  })  : originalIndex = index,
+        typeConverter = null,
         nullable = false,
         isArray = false,
         isRequired = true,
-        hidden = true;
+        hidden = true,
+        syntacticOrigin = variable;
 
   @override
   String get dartParameterName {
     if (name != null) {
       return dartNameForSqlColumn(name!);
     } else {
-      return 'var${variable.resolvedIndex}';
+      return 'var$index';
     }
   }
-
-  @override
-  AstNode get syntacticOrigin => variable;
 }
 
 abstract class DartPlaceholderType {}

@@ -238,6 +238,50 @@ abstract class View extends HasResultSet {
   Query as();
 }
 
+/// Annotations for Dart table classes to define a [SQL index](https://sqlite.org/lang_createindex.html)
+/// to add to the table.
+///
+/// ```dart
+/// @TableIndex(name: 'item_title', columns: {#title})
+/// class TodoItems extends Table {
+///   IntColumn get id => integer().autoIncrement()();
+///   TextColumn get title => text()();
+///   TextColumn get content => text().nullable()();
+/// }
+/// ```
+@Target({TargetKind.classType})
+final class TableIndex {
+  /// The name of the index in SQL.
+  ///
+  /// Please note that the name of every table, view, index and other elements
+  /// in a database must be unique. For this reason, the names of indices are
+  /// commonly prefixed with the name of the table they're referencing.
+  final String name;
+
+  /// Whether this index is `UNIQUE`, meaning that the database will forbid
+  /// multiple rows in the annotated table from having the same values in the
+  /// indexed columns.
+  final bool unique;
+
+  /// The columns of the table that should be part of the index.
+  ///
+  /// Columns are referenced with a [Symbol] of their getter name used in the
+  /// column definition. For instance, a table declaring a column as
+  /// `IntColumn get nextUpdateSnapshot => ...()` could reference this column
+  /// using `#nextUpdateSnapshot`.
+  final Set<Symbol> columns;
+
+  /// An annotation for Dart-defined drift tables telling drift to add an SQL
+  /// index to the table.
+  ///
+  /// See the class documentation at [TableIndex] for an example.
+  const TableIndex({
+    required this.name,
+    required this.columns,
+    this.unique = false,
+  });
+}
+
 /// A class to be used as an annotation on [Table] classes to customize the
 /// name for the data class that will be generated for the table class. The data
 /// class is a dart object that will be used to represent a row in the table.
@@ -295,7 +339,6 @@ class DataClassName {
 
 /// An annotation specifying an existing class to be used as a data class.
 @Target({TargetKind.classType})
-@experimental
 class UseRowClass {
   /// The existing class
   ///

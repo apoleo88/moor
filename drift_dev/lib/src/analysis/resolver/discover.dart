@@ -2,6 +2,7 @@ import 'package:analyzer/dart/ast/ast.dart' as dart;
 import 'package:analyzer/dart/constant/value.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/visitor.dart';
+import 'package:drift/drift.dart' show TableIndex;
 import 'package:source_gen/source_gen.dart';
 import 'package:sqlparser/sqlparser.dart' hide AnalysisError;
 
@@ -51,7 +52,7 @@ class DiscoverStep {
     return result;
   }
 
-  Future<void> discover() async {
+  Future<void> discover({required bool warnIfFileDoesntExist}) async {
     final extension = _file.extension;
     _file.discovery = UnknownFile();
 
@@ -61,7 +62,7 @@ class DiscoverStep {
         try {
           library = await _driver.backend.readDart(_file.ownUri);
         } catch (e) {
-          if (e is! NotALibraryException) {
+          if (e is! NotALibraryException && warnIfFileDoesntExist) {
             // Backends are supposed to throw NotALibraryExceptions if the
             // library is a part file. For other exceptions, we better report
             // the error.
@@ -77,8 +78,11 @@ class DiscoverStep {
         await finder.find();
 
         _file.errorsDuringDiscovery.addAll(finder.errors);
-        _file.discovery =
-            DiscoveredDartLibrary(library, _checkForDuplicates(finder.found));
+        _file.discovery = DiscoveredDartLibrary(
+          library,
+          _checkForDuplicates(finder.found),
+          finder.imports,
+        );
         break;
       case '.drift':
       case '.moor':
@@ -113,17 +117,17 @@ class DiscoverStep {
 
             imports.add(DriftFileImport(node, uri));
           } else if (node is TableInducingStatement) {
-            pendingElements
-                .add(DiscoveredDriftTable(_id(node.createdName), node));
+            pendingElements.add(DiscoveredDriftTable(
+                _id(node.createdName), DriftElementKind.table, node));
           } else if (node is CreateViewStatement) {
-            pendingElements
-                .add(DiscoveredDriftView(_id(node.createdName), node));
+            pendingElements.add(DiscoveredDriftView(
+                _id(node.createdName), DriftElementKind.view, node));
           } else if (node is CreateIndexStatement) {
-            pendingElements
-                .add(DiscoveredDriftIndex(_id(node.indexName), node));
+            pendingElements.add(DiscoveredDriftIndex(
+                _id(node.indexName), DriftElementKind.dbIndex, node));
           } else if (node is CreateTriggerStatement) {
-            pendingElements
-                .add(DiscoveredDriftTrigger(_id(node.triggerName), node));
+            pendingElements.add(DiscoveredDriftTrigger(
+                _id(node.triggerName), DriftElementKind.trigger, node));
           } else if (node is DeclaredStatement) {
             String name;
 
@@ -131,10 +135,11 @@ class DiscoverStep {
             if (declaredName is SimpleName) {
               name = declaredName.name;
             } else {
-              name = 'special:${specialQueryNameCount++}';
+              name = '\$drift_${specialQueryNameCount++}';
             }
 
-            pendingElements.add(DiscoveredDriftStatement(_id(name), node));
+            pendingElements.add(DiscoveredDriftStatement(
+                _id(name), DriftElementKind.definedQuery, node));
           }
         }
 
@@ -153,7 +158,14 @@ class _FindDartElements extends RecursiveElementVisitor<void> {
   final DiscoverStep _discoverStep;
   final LibraryElement _library;
 
-  final TypeChecker _isTable, _isView, _isTableInfo, _isDatabase, _isDao;
+  final List<DriftImport> imports = [];
+
+  final TypeChecker _isTable,
+      _isTableIndex,
+      _isView,
+      _isTableInfo,
+      _isDatabase,
+      _isDao;
 
   final List<Future<void>> _pendingWork = [];
 
@@ -163,6 +175,7 @@ class _FindDartElements extends RecursiveElementVisitor<void> {
   _FindDartElements(
       this._discoverStep, this._library, KnownDriftTypes knownTypes)
       : _isTable = TypeChecker.fromStatic(knownTypes.tableType),
+        _isTableIndex = TypeChecker.fromStatic(knownTypes.tableIndexType),
         _isView = TypeChecker.fromStatic(knownTypes.viewType),
         _isTableInfo = TypeChecker.fromStatic(knownTypes.tableInfoType),
         _isDatabase = TypeChecker.fromStatic(knownTypes.driftDatabase),
@@ -203,8 +216,14 @@ class _FindDartElements extends RecursiveElementVisitor<void> {
         _pendingWork.add(Future.sync(() async {
           final name = await _sqlNameOfTable(element);
           final id = _discoverStep._id(name);
+          final attachedIndices = <DriftElementId>[];
 
-          found.add(DiscoveredDartTable(id, element));
+          for (final (annotation, indexId) in _tableIndexAnnotation(element)) {
+            attachedIndices.add(indexId);
+            found.add(DiscoveredDartIndex(indexId, element, id, annotation));
+          }
+
+          found.add(DiscoveredDartTable(id, element, attachedIndices));
         }));
       }
     } else if (_isDslView(element)) {
@@ -231,9 +250,46 @@ class _FindDartElements extends RecursiveElementVisitor<void> {
     super.visitClassElement(element);
   }
 
+  void _handleImportOrExport(LibraryElement? imported, bool isExported) {
+    if (imported != null && !imported.isInSdk) {
+      _pendingWork.add(Future(() async {
+        final uri = await _discoverStep._driver.backend.uriOfDart(imported);
+        imports.add((uri: uri, transitive: isExported));
+      }));
+    }
+  }
+
+  @override
+  void visitLibraryExportElement(LibraryExportElement element) {
+    _handleImportOrExport(element.exportedLibrary, true);
+  }
+
+  @override
+  void visitLibraryImportElement(LibraryImportElement element) {
+    _handleImportOrExport(element.importedLibrary, false);
+  }
+
   String _defaultNameForTableOrView(ClassElement definingElement) {
     return _discoverStep._driver.options.caseFromDartToSql
         .apply(definingElement.name);
+  }
+
+  /// Finds a [TableIndex] annotations on the [table].
+  Iterable<(ElementAnnotation, DriftElementId)> _tableIndexAnnotation(
+      ClassElement table) sync* {
+    for (final annotation in table.metadata) {
+      final computed = annotation.computeConstantValue();
+      final type = computed?.type;
+
+      if (computed != null &&
+          type != null &&
+          _isTableIndex.isExactlyType(type)) {
+        yield (
+          annotation,
+          _discoverStep._id(computed.getField('name')?.toStringValue() ?? '')
+        );
+      }
+    }
   }
 
   DartObject? _driftViewAnnotation(ClassElement view) {

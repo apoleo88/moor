@@ -54,11 +54,16 @@ void expectParseError(
 }) {
   final result = SqlEngine().parse(sql);
 
-  expect(result.errors, [
-    isA<ParsingError>()
-        .having((e) => e.message, 'message', wrapMatcher(message))
-        .having((e) => e.token.span.text, 'span', wrapMatcher(span))
-  ]);
+  expect(result.errors, [isParsingError(message: message, span: span)]);
+}
+
+TypeMatcher<ParsingError> isParsingError({
+  dynamic message = anything,
+  dynamic span = anything,
+}) {
+  return isA<ParsingError>()
+      .having((e) => e.message, 'message', wrapMatcher(message))
+      .having((e) => e.token.span.text, 'span', wrapMatcher(span));
 }
 
 FileSpan fakeSpan(String content) {
@@ -82,14 +87,4 @@ void enforceHasSpan(AstNode node) {
   if (problematic != null) {
     throw ArgumentError('Node $problematic did not have a span');
   }
-}
-
-void enforceError(String sql, Matcher textMatcher) {
-  final parsed = SqlEngine().parse(sql);
-
-  expect(
-    parsed.errors,
-    contains(
-        isA<ParsingError>().having((e) => e.message, 'message', textMatcher)),
-  );
 }

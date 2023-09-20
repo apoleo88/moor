@@ -1,3 +1,5 @@
+import 'package:analyzer/dart/element/element.dart';
+
 import '../results/element.dart';
 import 'state.dart';
 
@@ -5,9 +7,11 @@ import 'state.dart';
 ///
 /// At the moment, the cache is not set up to handle changing files.
 class DriftAnalysisCache {
-  final Map<Uri, Map<String, Object?>> serializedElements = {};
+  final Map<Uri, CachedSerializationResult?> serializationCache = {};
   final Map<Uri, FileState> knownFiles = {};
-  final Map<DriftElementId, DiscoveredElement> discoveredElements = {};
+  final Map<DriftElementId, DriftElementKind> discoveredElements = {};
+
+  final Map<Uri, LibraryElement?> typeHelperLibraries = {};
 
   FileState stateForUri(Uri uri) {
     return knownFiles[uri] ?? notifyFileChanged(uri);
@@ -16,7 +20,7 @@ class DriftAnalysisCache {
   FileState notifyFileChanged(Uri uri) {
     // todo: Mark references for files that import this one as stale.
     // todo: Mark elements that reference an element in this file as stale.
-    serializedElements.remove(uri);
+    serializationCache.remove(uri);
 
     return knownFiles.putIfAbsent(uri, () => FileState(uri))
       ..errorsDuringDiscovery.clear()
@@ -26,15 +30,11 @@ class DriftAnalysisCache {
 
   void notifyFileDeleted(Uri uri) {}
 
-  void postFileDiscoveryResults(FileState state) {
+  void knowsLocalElements(FileState state) {
     discoveredElements.removeWhere((key, _) => key.libraryUri == state.ownUri);
 
-    final discovery = state.discovery;
-    if (discovery != null) {
-      discoveredElements.addAll({
-        for (final definedHere in discovery.locallyDefinedElements)
-          definedHere.ownId: definedHere,
-      });
+    for (final defined in state.definedElements) {
+      discoveredElements[defined.ownId] = defined.kind;
     }
   }
 
@@ -62,12 +62,22 @@ class DriftAnalysisCache {
       final found = pending.removeLast();
       yield found;
 
-      for (final imported
-          in found.discovery?.importDependencies ?? const <Uri>[]) {
-        if (seenUris.add(imported)) {
-          pending.add(knownFiles[imported]!);
+      for (final imported in found.imports ?? const <DriftImport>[]) {
+        // We might not have a known file for all imports of a Dart file, since
+        // not all imports are drift-related there.
+        final knownImport = knownFiles[imported.uri];
+
+        if (seenUris.add(imported.uri) && knownImport != null) {
+          pending.add(knownImport);
         }
       }
     }
   }
+}
+
+class CachedSerializationResult {
+  final List<Uri> cachedImports;
+  final Map<String, Map<String, Object?>> cachedElements;
+
+  CachedSerializationResult(this.cachedImports, this.cachedElements);
 }

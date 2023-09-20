@@ -62,7 +62,12 @@ class Parser {
 
   bool get _isAtEnd => _peek.type == TokenType.eof;
   Token get _peek => tokens[_current];
-  Token get _peekNext => tokens[_current + 1];
+  Token? get _peekNext {
+    if (_isAtEnd) return null;
+
+    return tokens[_current + 1];
+  }
+
   Token get _previous => tokens[_current - 1];
 
   bool _match(Iterable<TokenType> types) {
@@ -96,14 +101,14 @@ class Parser {
   /// "NOT" followed by [type]. Does not consume any tokens.
   bool _checkWithNot(TokenType type) {
     if (_check(type)) return true;
-    if (_check(TokenType.not) && _peekNext.type == type) return true;
+    if (_check(TokenType.not) && _peekNext?.type == type) return true;
     return false;
   }
 
   /// Like [_checkWithNot], but with more than one token type.
   bool _checkAnyWithNot(List<TokenType> types) {
     if (types.any(_check)) return true;
-    if (_check(TokenType.not) && types.contains(_peekNext.type)) return true;
+    if (_check(TokenType.not) && types.contains(_peekNext?.type)) return true;
     return false;
   }
 
@@ -183,6 +188,24 @@ class Parser {
   Statement safeStatement() {
     return _parseAsStatement(statement, requireSemicolon: false) ??
         InvalidStatement();
+  }
+
+  SemicolonSeparatedStatements safeStatements() {
+    final first = _peek;
+    final statements = <Statement>[];
+    while (!_isAtEnd) {
+      final firstForStatement = _peek;
+      final statement = _parseAsStatement(_statementWithoutSemicolon);
+
+      if (statement != null) {
+        statements.add(statement);
+      } else {
+        statements
+            .add(InvalidStatement()..setSpan(firstForStatement, _previous));
+      }
+    }
+
+    return SemicolonSeparatedStatements(statements)..setSpan(first, _previous);
   }
 
   /// Parses the remaining input as column constraints.
@@ -427,6 +450,8 @@ class Parser {
 
       if (stmt != null) {
         stmts.add(stmt);
+      } else {
+        _error('Invalid statement, expected SELECT, INSERT, UPDATE or DELETE.');
       }
     }
 
@@ -844,8 +869,20 @@ class Parser {
     }
 
     if (_peek is KeywordToken) {
-      _error('Could not parse this expression. Note: This is a reserved '
-          'keyword, you can escape it in double ticks');
+      // Improve error messages for possible function calls, https://github.com/simolus3/drift/discussions/2277
+      if (tokens.length > _current + 1 &&
+          _peekNext?.type == TokenType.leftParen) {
+        _error(
+          'Expected an expression here, but got a reserved keyword. Did you '
+          'mean to call a function? Try wrapping the keyword in double quotes.',
+        );
+      } else {
+        _error(
+          'Expected an expression here, but got a reserved keyword. Did you '
+          'mean to use it as a column? Try wrapping it in double quotes '
+          '("${_peek.lexeme}").',
+        );
+      }
     } else {
       _error('Could not parse this expression');
     }
@@ -1314,6 +1351,7 @@ class Parser {
     // Can either be a list of <TableOrSubquery> or a join. Joins also start
     // with a TableOrSubquery, so let's first parse that.
     final start = _tableOrSubquery();
+
     // parse join, if there is one
     return _joinClause(start) ?? start;
   }
@@ -1339,7 +1377,7 @@ class Parser {
       return tableRef;
     } else if (_matchOne(TokenType.leftParen)) {
       final first = _previous;
-      final innerStmt = select()!;
+      final innerStmt = _fullSelect()!;
       _consume(TokenType.rightParen,
           'Expected a right bracket to terminate the inner select');
 
@@ -1367,7 +1405,7 @@ class Parser {
     final joins = <Join>[];
 
     while (operator != null) {
-      final first = _peekNext;
+      final first = _peek;
 
       final subquery = _tableOrSubquery();
       final constraint = _joinConstraint();
@@ -2023,7 +2061,8 @@ class Parser {
       return _createView();
     }
 
-    return null;
+    _error(
+        'Expected a TABLE, TRIGGER, INDEX or VIEW to be defined after the CREATE keyword.');
   }
 
   /// Parses a `CREATE TABLE` statement, assuming that the `CREATE` token has
@@ -2055,7 +2094,7 @@ class Parser {
 
     do {
       try {
-        final tableConstraint = _tableConstraintOrNull();
+        final tableConstraint = tableConstraintOrNull();
 
         if (tableConstraint != null) {
           encounteredTableConstraint = true;
@@ -2217,8 +2256,19 @@ class Parser {
       final useExisting = _previous.type == TokenType.$with;
       final name =
           _consumeIdentifier('Expected the name for the data class').identifier;
+      String? constructorName;
 
-      return DriftTableName(name, useExisting)..setSpan(first, _previous);
+      if (_matchOne(TokenType.dot)) {
+        constructorName = _consumeIdentifier(
+                'Expected name of the constructor to use after the dot')
+            .identifier;
+      }
+
+      return DriftTableName(
+        useExistingDartClass: useExisting,
+        overriddenDataClassName: name,
+        constructorName: constructorName,
+      )..setSpan(first, _previous);
     }
     return null;
   }
@@ -2420,8 +2470,7 @@ class Parser {
   }
 
   ColumnDefinition _columnDefinition() {
-    final name = _consume(TokenType.identifier, 'Expected a column name')
-        as IdentifierToken;
+    final name = _consumeIdentifier('Expected a column name');
 
     final typeTokens = _typeName();
     String? typeName;
@@ -2603,7 +2652,7 @@ class Parser {
     _error('Expected a constraint (primary key, nullability, etc.)');
   }
 
-  TableConstraint? _tableConstraintOrNull() {
+  TableConstraint? tableConstraintOrNull({bool requireConstraint = false}) {
     final first = _peek;
     final nameToken = _constraintNameOrNull();
     final name = nameToken?.identifier;
@@ -2646,7 +2695,7 @@ class Parser {
       return result;
     }
 
-    if (name != null) {
+    if (name != null || requireConstraint) {
       // if a constraint was started with CONSTRAINT <name> but then we didn't
       // find a constraint, that's an syntax error
       _error('Expected a table constraint (e.g. a primary key)');
@@ -2744,10 +2793,8 @@ class Parser {
 
     DeferrableClause? deferrable;
     if (_checkWithNot(TokenType.deferrable)) {
-      final first = _peekNext;
-
-      final not = _matchOne(TokenType.not);
-      _consume(TokenType.deferrable);
+      final not = _matchOneAndGet(TokenType.not);
+      final deferrableToken = _consume(TokenType.deferrable);
 
       InitialDeferrableMode? mode;
       if (_matchOne(TokenType.initially)) {
@@ -2760,7 +2807,8 @@ class Parser {
         }
       }
 
-      deferrable = DeferrableClause(not, mode)..setSpan(first, _previous);
+      deferrable = DeferrableClause(not != null, mode)
+        ..setSpan(not ?? deferrableToken, _previous);
     }
 
     return ForeignKeyClause(

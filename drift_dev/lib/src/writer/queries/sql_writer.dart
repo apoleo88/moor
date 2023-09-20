@@ -1,6 +1,8 @@
 import 'package:charcode/ascii.dart';
 import 'package:collection/collection.dart';
 import 'package:drift/drift.dart' show SqlDialect;
+// ignore: deprecated_member_use
+import 'package:drift/sqlite_keywords.dart';
 import 'package:sqlparser/sqlparser.dart';
 import 'package:sqlparser/utils/node_to_text.dart';
 
@@ -26,8 +28,9 @@ String placeholderContextName(FoundDartPlaceholder placeholder) {
 }
 
 extension ToSqlText on AstNode {
-  String toSqlWithoutDriftSpecificSyntax(DriftOptions options) {
-    final writer = SqlWriter(options, escapeForDart: false);
+  String toSqlWithoutDriftSpecificSyntax(
+      DriftOptions options, SqlDialect dialect) {
+    final writer = SqlWriter(options, dialect: dialect, escapeForDart: false);
     return writer.writeSql(this);
   }
 }
@@ -36,17 +39,19 @@ class SqlWriter extends NodeSqlBuilder {
   final StringBuffer _out;
   final SqlQuery? query;
   final DriftOptions options;
+  final SqlDialect dialect;
   final Map<NestedStarResultColumn, NestedResultTable> _starColumnToResolved;
 
-  bool get _isPostgres => options.effectiveDialect == SqlDialect.postgres;
+  bool get _isPostgres => dialect == SqlDialect.postgres;
 
-  SqlWriter._(this.query, this.options, this._starColumnToResolved,
-      StringBuffer out, bool escapeForDart)
+  SqlWriter._(this.query, this.options, this.dialect,
+      this._starColumnToResolved, StringBuffer out, bool escapeForDart)
       : _out = out,
         super(escapeForDart ? _DartEscapingSink(out) : out);
 
   factory SqlWriter(
     DriftOptions options, {
+    required SqlDialect dialect,
     SqlQuery? query,
     bool escapeForDart = true,
     StringBuffer? buffer,
@@ -61,7 +66,7 @@ class SqlWriter extends NodeSqlBuilder {
           if (nestedResult is NestedResultTable) nestedResult.from: nestedResult
       };
     }
-    return SqlWriter._(query, options, doubleStarColumnToResolvedTable,
+    return SqlWriter._(query, options, dialect, doubleStarColumnToResolvedTable,
         buffer ?? StringBuffer(), escapeForDart);
   }
 
@@ -82,17 +87,36 @@ class SqlWriter extends NodeSqlBuilder {
     return _out.toString();
   }
 
-  FoundVariable? _findMoorVar(Variable target) {
-    return query!.variables.firstWhereOrNull(
-        (f) => f.variable.resolvedIndex == target.resolvedIndex);
+  @override
+  bool isKeyword(String lexeme) {
+    return isKeywordLexeme(lexeme) ||
+        switch (dialect) {
+          SqlDialect.postgres => isPostgresKeywordLexeme(lexeme),
+          SqlDialect.mariadb =>
+            additionalMariaDBKeywords.contains(lexeme.toUpperCase()),
+          _ => false,
+        };
   }
 
-  void _writeMoorVariable(FoundVariable variable) {
+  @override
+  String escapeIdentifier(String identifier) {
+    return dialect.escape(identifier);
+  }
+
+  FoundVariable? _findVariable(Variable target) {
+    return query!.variables
+        .firstWhereOrNull((f) => f.originalIndex == target.resolvedIndex);
+  }
+
+  void _writeAnalyzedVariable(FoundVariable variable) {
     if (variable.isArray) {
       _writeRawInSpaces('(\$${expandedName(variable)})');
     } else {
-      final mark = _isPostgres ? '@' : '?';
-      _writeRawInSpaces('$mark${variable.index}');
+      final mark = _isPostgres ? '\\\$' : '?';
+      final syntax =
+          dialect.supportsIndexedParameters ? '$mark${variable.index}' : mark;
+
+      _writeRawInSpaces(syntax);
     }
   }
 
@@ -151,9 +175,9 @@ class SqlWriter extends NodeSqlBuilder {
 
   @override
   void visitNamedVariable(ColonNamedVariable e, void arg) {
-    final moor = _findMoorVar(e);
-    if (moor != null) {
-      _writeMoorVariable(moor);
+    final found = _findVariable(e);
+    if (found != null) {
+      _writeAnalyzedVariable(found);
     } else {
       super.visitNamedVariable(e, arg);
     }
@@ -161,9 +185,9 @@ class SqlWriter extends NodeSqlBuilder {
 
   @override
   void visitNumberedVariable(NumberedVariable e, void arg) {
-    final moor = _findMoorVar(e);
-    if (moor != null) {
-      _writeMoorVariable(moor);
+    final found = _findVariable(e);
+    if (found != null) {
+      _writeAnalyzedVariable(found);
     } else {
       super.visitNumberedVariable(e, arg);
     }
@@ -184,15 +208,20 @@ class SqlWriter extends NodeSqlBuilder {
       // Convert foo.** to "foo.a" AS "nested_0.a", ... for all columns in foo
       var isFirst = true;
 
-      for (final column in result.table.columns) {
+      for (final column in result.innerResultSet.scalarColumns) {
         if (isFirst) {
           isFirst = false;
         } else {
           _out.write(', ');
         }
 
-        final columnName = column.nameInSql;
-        _out.write('"$table"."$columnName" AS "$prefix.$columnName"');
+        final columnName = column.name;
+
+        final escapedTable = escapeIdentifier(table);
+        final escapedColumn = escapeIdentifier(columnName);
+        final escapedAlias = escapeIdentifier('$prefix.$columnName');
+
+        _out.write('$escapedTable.$escapedColumn AS $escapedAlias');
       }
     } else if (e is DartPlaceholder) {
       final moorPlaceholder =

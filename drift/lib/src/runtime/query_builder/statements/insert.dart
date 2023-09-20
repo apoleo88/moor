@@ -78,6 +78,66 @@ class InsertStatement<T extends Table, D> {
     });
   }
 
+  /// Inserts rows from the [select] statement.
+  ///
+  /// This method creates an `INSERT INTO SELECT` statement in SQL which will
+  /// insert a row into this table for each row returned by the [select]
+  /// statement.
+  ///
+  /// The [columns] map describes which column from the select statement should
+  /// be written into which column of the table. The keys of the map are the
+  /// target column, and values are expressions added to the select statement.
+  ///
+  /// For an example, see the [documentation website](https://drift.simonbinder.eu/docs/advanced-features/joins/#using-selects-as-insert)
+  @experimental
+  Future<void> insertFromSelect(
+    BaseSelectStatement select, {
+    required Map<Column, Expression> columns,
+    InsertMode mode = InsertMode.insert,
+    UpsertClause<T, D>? onConflict,
+  }) async {
+    // To be able to reference columns by names instead of by their index like
+    // normally done with `INSERT INTO SELECT`, we use a CTE. The final SQL
+    // statement will look like this:
+    // WITH source AS $select INSERT INTO $table (...) SELECT ... FROM source
+    final ctx = GenerationContext.fromDb(database);
+    const sourceCte = '_source';
+
+    ctx.buffer.write('WITH $sourceCte AS (');
+    select.writeInto(ctx);
+    ctx.buffer.write(') ');
+
+    final columnNameToSelectColumnName = <String, String>{};
+    columns.forEach((key, value) {
+      final name = select._nameForColumn(value);
+      if (name == null) {
+        throw ArgumentError.value(
+            value,
+            'column',
+            'This column passd to insertFromSelect() was not added to the '
+                'source select statement.');
+      }
+
+      columnNameToSelectColumnName[key.name] = name;
+    });
+
+    mode.writeInto(ctx);
+    ctx.buffer
+      ..write(' INTO ${ctx.identifier(table.aliasedName)} (')
+      ..write(columnNameToSelectColumnName.keys.map(ctx.identifier).join(', '))
+      ..write(') SELECT ')
+      ..write(
+          columnNameToSelectColumnName.values.map(ctx.identifier).join(', '))
+      ..write(' FROM $sourceCte');
+    _writeOnConflict(ctx, mode, null, onConflict);
+
+    return await database.doWhenOpened((e) async {
+      await e.runInsert(ctx.sql, ctx.boundVariables);
+      database
+          .notifyUpdates({TableUpdate.onTable(table, kind: UpdateKind.insert)});
+    });
+  }
+
   /// Inserts a row into the table and returns it.
   ///
   /// Depending on the [InsertMode] or the [DoUpdate] `onConflict` clause, the
@@ -169,17 +229,16 @@ class InsertStatement<T extends Table, D> {
       // include this column
     }
 
-    final ctx = GenerationContext.fromDb(database);
-
-    if (ctx.dialect == SqlDialect.postgres &&
-        mode != InsertMode.insert &&
-        mode != InsertMode.insertOrIgnore) {
-      throw ArgumentError('$mode not supported on postgres');
+    // The rowid is not included in the list of columns since it doesn't show
+    // up in selects, but we should also add that value to the map for inserts.
+    if (rawValues.containsKey('rowid')) {
+      map['rowid'] = rawValues['rowid']!;
     }
 
+    final ctx = GenerationContext.fromDb(database);
+    mode.writeInto(ctx);
+
     ctx.buffer
-      ..write(_insertKeywords[
-          ctx.dialect == SqlDialect.postgres ? InsertMode.insert : mode])
       ..write(' INTO ')
       ..write(ctx.identifier(table.aliasedName))
       ..write(' ');
@@ -190,13 +249,68 @@ class InsertStatement<T extends Table, D> {
       writeInsertable(ctx, map);
     }
 
-    void writeDoUpdate(DoUpdate<T, D> onConflict) {
+    _writeOnConflict(ctx, mode, entry, onConflict);
+
+    if (returning) {
+      ctx.buffer.write(' RETURNING *');
+    } else if (ctx.dialect == SqlDialect.postgres) {
+      if (table.$primaryKey.length == 1) {
+        final id = table.$primaryKey.firstOrNull;
+        if (id != null && id.type == DriftSqlType.int) {
+          ctx.buffer.write(' RETURNING ${id.name}');
+        }
+      }
+    }
+
+    return ctx;
+  }
+
+  void _writeOnConflict(
+    GenerationContext ctx,
+    InsertMode mode,
+    Insertable<D>? originalEntry,
+    UpsertClause<T, D>? onConflict,
+  ) {
+    void writeOnConflictConstraint(
+        List<Column<Object>>? target, Expression<bool>? where) {
+      if (ctx.dialect == SqlDialect.mariadb) {
+        ctx.buffer.write(' ON DUPLICATE');
+      } else {
+        ctx.buffer.write(' ON CONFLICT(');
+
+        final conflictTarget = target ?? table.$primaryKey.toList();
+
+        if (conflictTarget.isEmpty) {
+          throw ArgumentError(
+              'Table has no primary key, so a conflict target is needed.');
+        }
+
+        var first = true;
+        for (final target in conflictTarget) {
+          if (!first) ctx.buffer.write(', ');
+
+          // Writing the escaped name directly because it should not have a table
+          // name in front of it.
+          ctx.buffer.write(target.escapedNameFor(ctx.dialect));
+          first = false;
+        }
+
+        ctx.buffer.write(')');
+      }
+
+      if (where != null) {
+        Where(where).writeInto(ctx);
+      }
+    }
+
+    if (onConflict is DoUpdate<T, D>) {
       if (onConflict._usesExcludedTable) {
         ctx.hasMultipleTables = true;
       }
+
       final upsertInsertable = onConflict._createInsertable(table);
 
-      if (!identical(entry, upsertInsertable)) {
+      if (!identical(originalEntry, upsertInsertable)) {
         // We run a ON CONFLICT DO UPDATE, so make sure upsertInsertable is
         // valid for updates.
         // the identical check is a performance optimization - for the most
@@ -208,32 +322,20 @@ class InsertStatement<T extends Table, D> {
 
       final updateSet = upsertInsertable.toColumns(true);
 
-      ctx.buffer.write(' ON CONFLICT(');
-
-      final conflictTarget = onConflict.target ?? table.$primaryKey.toList();
-
-      if (conflictTarget.isEmpty) {
-        throw ArgumentError(
-            'Table has no primary key, so a conflict target is needed.');
-      }
-
-      var first = true;
-      for (final target in conflictTarget) {
-        if (!first) ctx.buffer.write(', ');
-
-        // Writing the escaped name directly because it should not have a table
-        // name in front of it.
-        ctx.buffer.write(target.escapedName);
-        first = false;
-      }
+      writeOnConflictConstraint(onConflict.target,
+          onConflict._targetCondition?.call(table.asDslTable));
 
       if (ctx.dialect == SqlDialect.postgres &&
           mode == InsertMode.insertOrIgnore) {
-        ctx.buffer.write(') DO NOTHING ');
+        ctx.buffer.write(' DO NOTHING ');
       } else {
-        ctx.buffer.write(') DO UPDATE SET ');
+        if (ctx.dialect == SqlDialect.mariadb) {
+          ctx.buffer.write(' KEY UPDATE ');
+        } else {
+          ctx.buffer.write(' DO UPDATE SET ');
+        }
 
-        first = true;
+        var first = true;
         for (final update in updateSet.entries) {
           final column = ctx.identifier(update.key);
 
@@ -251,26 +353,14 @@ class InsertStatement<T extends Table, D> {
           where.writeInto(ctx);
         }
       }
-    }
-
-    if (onConflict is DoUpdate<T, D>) {
-      writeDoUpdate(onConflict);
     } else if (onConflict is UpsertMultiple<T, D>) {
-      onConflict.clauses.forEach(writeDoUpdate);
-    }
-
-    if (returning) {
-      ctx.buffer.write(' RETURNING *');
-    } else if (ctx.dialect == SqlDialect.postgres) {
-      if (table.$primaryKey.length == 1) {
-        final id = table.$primaryKey.firstOrNull;
-        if (id != null && id.type == DriftSqlType.int) {
-          ctx.buffer.write(' RETURNING ${id.name}');
-        }
+      for (final clause in onConflict.clauses) {
+        _writeOnConflict(ctx, mode, originalEntry, clause);
       }
+    } else if (onConflict is DoNothing<T, D>) {
+      writeOnConflictConstraint(onConflict.target, null);
+      ctx.buffer.write(' DO NOTHING');
     }
-
-    return ctx;
   }
 
   void _validateIntegrity(Insertable<D>? d) {
@@ -309,7 +399,7 @@ class InsertStatement<T extends Table, D> {
 
 /// Enumeration of different insert behaviors. See the documentation on the
 /// individual fields for details.
-enum InsertMode {
+enum InsertMode implements Component {
   /// A regular `INSERT INTO` statement. When a row with the same primary or
   /// unique key already exists, the insert statement will fail and an exception
   /// will be thrown. If the exception is caught, previous statements made in
@@ -337,7 +427,19 @@ enum InsertMode {
   insertOrFail,
 
   /// Like [insert], but failures will be ignored.
-  insertOrIgnore,
+  insertOrIgnore;
+
+  @override
+  void writeInto(GenerationContext ctx) {
+    if (ctx.dialect == SqlDialect.postgres &&
+        this != InsertMode.insert &&
+        this != InsertMode.insertOrIgnore) {
+      throw ArgumentError('$this not supported on postgres');
+    }
+
+    ctx.buffer.write(_insertKeywords[
+        ctx.dialect == SqlDialect.postgres ? InsertMode.insert : this]);
+  }
 }
 
 const _insertKeywords = <InsertMode, String>{
@@ -363,6 +465,7 @@ abstract class UpsertClause<T extends Table, D> {}
 class DoUpdate<T extends Table, D> extends UpsertClause<T, D> {
   final Insertable<D> Function(T old, T excluded) _creator;
   final Where Function(T old, T excluded)? _where;
+  final Expression<bool> Function(T table)? _targetCondition;
 
   final bool _usesExcludedTable;
 
@@ -379,15 +482,27 @@ class DoUpdate<T extends Table, D> extends UpsertClause<T, D> {
   /// If you need to refer to both the old row and the row that would have
   /// been inserted, use [DoUpdate.withExcluded].
   ///
+  /// A `DO UPDATE` clause must refer to a set of columns potentially causing a
+  /// conflict, and only a conflict on those columns causes this clause to be
+  /// applied. The most common conflict would be an existing row with the same
+  /// primary key, which is the default for [target]. Other unique indices can
+  /// be targeted too. If such a unique index has a condition, it can be set
+  /// with [targetCondition] (which forms the rarely used `WHERE` in the
+  /// conflict target).
+  ///
   /// The optional [where] clause can be used to disable the update based on
   /// the old value. If a [where] clause is set and it evaluates to false, a
   /// conflict will keep the old row without applying the update.
   ///
   /// For an example, see [InsertStatement.insert].
-  DoUpdate(Insertable<D> Function(T old) update,
-      {this.target, Expression<bool> Function(T old)? where})
-      : _creator = ((old, _) => update(old)),
+  DoUpdate(
+    Insertable<D> Function(T old) update, {
+    this.target,
+    Expression<bool> Function(T old)? where,
+    Expression<bool> Function(T table)? targetCondition,
+  })  : _creator = ((old, _) => update(old)),
         _where = where == null ? null : ((old, _) => Where(where(old))),
+        _targetCondition = targetCondition,
         _usesExcludedTable = false;
 
   /// Creates a `DO UPDATE` clause.
@@ -398,15 +513,27 @@ class DoUpdate<T extends Table, D> extends UpsertClause<T, D> {
   /// to columns in the row that couldn't be inserted with the `excluded`
   /// parameter.
   ///
+  /// A `DO UPDATE` clause must refer to a set of columns potentially causing a
+  /// conflict, and only a conflict on those columns causes this clause to be
+  /// applied. The most common conflict would be an existing row with the same
+  /// primary key, which is the default for [target]. Other unique indices can
+  /// be targeted too. If such a unique index has a condition, it can be set
+  /// with [targetCondition] (which forms the rarely used `WHERE` in the
+  /// conflict target).
+  ///
   /// The optional [where] clause can be used to disable the update based on
   /// the old value. If a [where] clause is set and it evaluates to false, a
   /// conflict will keep the old row without applying the update.
   ///
   /// For an example, see [InsertStatement.insert].
-  DoUpdate.withExcluded(Insertable<D> Function(T old, T excluded) update,
-      {this.target, Expression<bool> Function(T old, T excluded)? where})
-      : _creator = update,
+  DoUpdate.withExcluded(
+    Insertable<D> Function(T old, T excluded) update, {
+    this.target,
+    Expression<bool> Function(T table)? targetCondition,
+    Expression<bool> Function(T old, T excluded)? where,
+  })  : _creator = update,
         _usesExcludedTable = true,
+        _targetCondition = targetCondition,
         _where = where == null
             ? null
             : ((old, excluded) => Where(where(old, excluded)));
@@ -430,4 +557,16 @@ class UpsertMultiple<T extends Table, D> extends UpsertClause<T, D> {
   /// This requires a fairly recent sqlite3 version (3.35.0, released on 2021-
   /// 03-12).
   UpsertMultiple(this.clauses);
+}
+
+/// Upsert clause that does nothing on conflict
+class DoNothing<T extends Table, D> extends UpsertClause<T, D> {
+  /// An optional list of columns to serve as an "conflict target", which
+  /// specifies the uniqueness constraint that will trigger the upsert.
+  ///
+  /// By default, the primary key of the table will be used.
+  final List<Column>? target;
+
+  /// Creates an upsert clause that does nothing on conflict
+  DoNothing({this.target});
 }

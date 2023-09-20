@@ -1,5 +1,4 @@
 import 'package:analyzer/dart/ast/ast.dart' as dart;
-import 'package:analyzer/dart/element/type.dart';
 import 'package:drift/drift.dart' show DriftSqlType;
 import 'package:drift/drift.dart' as drift;
 import 'package:recase/recase.dart';
@@ -23,23 +22,26 @@ import 'required_variables.dart';
 /// class is simply there to bundle the data.
 class _QueryHandlerContext {
   final List<FoundElement> foundElements;
+  final List<SyntacticElementReference> elementReferences;
   final AstNode root;
   final NestedQueriesContainer? nestedScope;
   final String queryName;
   final String? requestedResultClass;
-  final DartType? requestedResultType;
+  final RequestedQueryResultType? requestedResultType;
 
   final DriftTableName? sourceForFixedName;
 
   _QueryHandlerContext({
     required List<FoundElement> foundElements,
+    required List<SyntacticElementReference> elementReferences,
     required this.root,
     required this.queryName,
     required this.nestedScope,
     this.requestedResultClass,
     this.requestedResultType,
     this.sourceForFixedName,
-  }) : foundElements = List.unmodifiable(foundElements);
+  })  : foundElements = List.unmodifiable(foundElements),
+        elementReferences = List.unmodifiable(elementReferences);
 }
 
 /// Maps an [AnalysisContext] from the sqlparser to a [SqlQuery] from this
@@ -104,7 +106,7 @@ class QueryAnalyzer {
       nestedScope = nestedAnalyzer.analyzeRoot(context.root as SelectStatement);
     }
 
-    final foundElements = _extractElements(
+    final (foundElements, references) = _extractElements(
       ctx: context,
       root: context.root,
       required: requiredVariables,
@@ -113,7 +115,7 @@ class QueryAnalyzer {
     _verifyNoSkippedIndexes(foundElements);
 
     String? requestedResultClass;
-    DartType? requestedResultType;
+    RequestedQueryResultType? requestedResultType;
     if (declaration is DefinedSqlQuery) {
       requestedResultClass = declaration.resultClassName;
       requestedResultType = declaration.existingDartType;
@@ -121,6 +123,7 @@ class QueryAnalyzer {
 
     final query = _mapToDrift(_QueryHandlerContext(
       foundElements: foundElements,
+      elementReferences: references,
       queryName: declaration.name,
       requestedResultClass: requestedResultClass,
       requestedResultType: requestedResultType,
@@ -210,6 +213,7 @@ class QueryAnalyzer {
       context,
       root,
       queryContext.foundElements,
+      queryContext.elementReferences,
       updatedFinder.writtenTables
           .map((write) {
             final table = _lookupReference<DriftTable?>(write.table.name);
@@ -232,7 +236,6 @@ class QueryAnalyzer {
           .whereType<WrittenDriftTable>()
           .toList(),
       isInsert: isInsert,
-      hasMultipleTables: updatedFinder.foundTables.length > 1,
       resultSet: resultSet,
     );
   }
@@ -267,6 +270,7 @@ class QueryAnalyzer {
       context,
       queryContext.root,
       queryContext.foundElements,
+      queryContext.elementReferences,
       driftEntities,
       _inferResultSet(queryContext, resolvedColumns, syntacticColumns),
       queryContext.requestedResultClass,
@@ -332,6 +336,7 @@ class QueryAnalyzer {
 
         if (column is NestedStarResultColumn) {
           final resolved = _resolveNestedResultTable(queryContext, column);
+
           if (resolved != null) {
             // The single table optimization doesn't make sense when nested result
             // sets are present.
@@ -441,19 +446,38 @@ class QueryAnalyzer {
       _QueryHandlerContext queryContext, NestedStarResultColumn column) {
     final originalResult = column.resultSet;
     final result = originalResult?.unalias();
-    if (result is! Table && result is! View) {
-      return null;
-    }
+    final rawColumns = result?.resolvedColumns;
 
-    final driftTable = _lookupReference<DriftElementWithResultSet>(
-        (result as NamedResultSet).name);
+    if (result == null || rawColumns == null) return null;
+
+    final driftResultSet = _inferResultSet(
+      _QueryHandlerContext(
+        foundElements: queryContext.foundElements,
+        elementReferences: queryContext.elementReferences,
+        root: queryContext.root,
+        queryName: queryContext.queryName,
+        nestedScope: queryContext.nestedScope,
+        sourceForFixedName: queryContext.sourceForFixedName,
+        // Remove desired result class, if any. It will be resolved by the
+        // parent _inferResultSet call.
+      ),
+      rawColumns,
+      null,
+    );
+
     final analysis = JoinModel.of(column);
     final isNullable =
         analysis == null || analysis.isNullableTable(originalResult!);
+
+    final queryIndex = nestedQueryCounter++;
+    final resultClassName =
+        '${ReCase(queryContext.queryName).pascalCase}NestedColumn$queryIndex';
+
     return NestedResultTable(
-      column,
-      column.as ?? column.tableName,
-      driftTable,
+      from: column,
+      name: column.as ?? column.tableName,
+      innerResultSet: driftResultSet,
+      nameForGeneratedRowClass: resultClassName,
       isNullable: isNullable,
     );
   }
@@ -467,7 +491,7 @@ class QueryAnalyzer {
       _QueryHandlerContext queryContext, NestedQueryColumn column) {
     final childScope = queryContext.nestedScope?.nestedQueries[column];
 
-    final foundElements = _extractElements(
+    final (foundElements, references) = _extractElements(
       ctx: context,
       root: column.select,
       required: requiredVariables,
@@ -494,6 +518,7 @@ class QueryAnalyzer {
         requestedResultClass: resultClassName,
         root: column.select,
         foundElements: foundElements,
+        elementReferences: references,
         nestedScope: childScope,
       )),
     );
@@ -547,7 +572,7 @@ class QueryAnalyzer {
   ///    a Dart placeholder, its indexed is LOWER than that element. This means
   ///    that elements can be expanded into multiple variables without breaking
   ///    variables that appear after them.
-  List<FoundElement> _extractElements({
+  (List<FoundElement>, List<SyntacticElementReference>) _extractElements({
     required AnalysisContext ctx,
     required AstNode root,
     NestedQueriesContainer? nestedScope,
@@ -564,6 +589,8 @@ class QueryAnalyzer {
     final merged = _mergeVarsAndPlaceholders(variables, placeholders);
 
     final foundElements = <FoundElement>[];
+    final references = <SyntacticElementReference>[];
+
     // we don't allow variables with an explicit index after an array. For
     // instance: SELECT * FROM t WHERE id IN ? OR id = ?2. The reason this is
     // not allowed is that we expand the first arg into multiple vars at runtime
@@ -572,9 +599,15 @@ class QueryAnalyzer {
     var maxIndex = 999;
     var currentIndex = 0;
 
+    void addNewElement(FoundElement element) {
+      foundElements.add(element);
+      references.add(SyntacticElementReference(element));
+    }
+
     for (final used in merged) {
       if (used is Variable) {
         if (used.resolvedIndex == currentIndex) {
+          references.add(SyntacticElementReference(foundElements.last));
           continue; // already handled, we only report a single variable / index
         }
 
@@ -584,15 +617,30 @@ class QueryAnalyzer {
             (used is NumberedVariable) ? used.explicitIndex : null;
         final forCapture = used.meta<CapturedVariable>();
 
-        final internalType =
-            // If this variable was introduced to replace a reference from a
-            // `LIST` query to an outer query, use the type of the reference
-            // instead of the synthetic variable that we're replacing it with.
-            ctx.typeOf(forCapture != null ? forCapture.reference : used);
+        ResolveResult internalType;
+        if (forCapture != null) {
+          // If this variable was introduced to replace a reference from a
+          // `LIST` query to an outer query, use the type of the reference
+          // instead of the synthetic variable that we're replacing it with.
+          internalType = ctx.typeOf(forCapture.reference);
+        } else if (nestedScope != null &&
+            nestedScope.originalIndexForVariable.containsKey(used)) {
+          // The type inference algorithms treats variables as equal if they
+          // have the same logical index. The index of variables might change
+          // after applying the nested query transformer though, so we look up
+          // the original index used during type inference.
+          final originalIndex = nestedScope.originalIndexForVariable[used]!;
+          final type = ctx.types2.session.typeOfVariable(originalIndex);
+          internalType =
+              type != null ? ResolveResult(type) : ResolveResult.unknown();
+        } else {
+          internalType = ctx.typeOf(used);
+        }
+
         final type = driver.typeMapping.sqlTypeToDrift(internalType.type);
 
         if (forCapture != null) {
-          foundElements.add(FoundVariable.nestedQuery(
+          addNewElement(FoundVariable.nestedQuery(
             index: currentIndex,
             name: name,
             sqlType: type,
@@ -625,7 +673,7 @@ class QueryAnalyzer {
           converter = (internalType.type!.hint as TypeConverterHint).converter;
         }
 
-        foundElements.add(FoundVariable(
+        addNewElement(FoundVariable(
           index: currentIndex,
           name: name,
           sqlType: type,
@@ -652,10 +700,10 @@ class QueryAnalyzer {
         // we don't what index this placeholder has, so we can't allow _any_
         // explicitly indexed variables coming after this
         maxIndex = 0;
-        foundElements.add(_extractPlaceholder(ctx, used));
+        addNewElement(_extractPlaceholder(ctx, used));
       }
     }
-    return foundElements;
+    return (foundElements, references);
   }
 
   FoundDartPlaceholder _extractPlaceholder(

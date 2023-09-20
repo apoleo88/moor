@@ -136,7 +136,7 @@ void main() {
       contains(
         isA<NestedResult>()
             .having((e) => e.defaults, 'defaults', first)
-            .having((e) => e.nestedQuery0, 'nested', hasLength(2)),
+            .having((e) => e.nestedQuery1, 'nested', hasLength(2)),
       ),
     );
 
@@ -145,9 +145,20 @@ void main() {
       contains(
         isA<NestedResult>()
             .having((e) => e.defaults, 'defaults', second)
-            .having((e) => e.nestedQuery0, 'nested', hasLength(1)),
+            .having((e) => e.nestedQuery1, 'nested', hasLength(1)),
       ),
     );
+  });
+
+  test('insert with explicit rowid', () async {
+    await db.withConstraints
+        .insertOne(WithConstraintsCompanion.insert(b: 1, rowid: Value(12)));
+    final row = await db
+        .select(db.withConstraints)
+        .addColumns([db.withConstraints.rowId]).getSingle();
+
+    expect(row.read(db.withConstraints.rowId), 12);
+    expect(row.readTable(db.withConstraints), WithConstraint(b: 1));
   });
 
   group('returning', () {

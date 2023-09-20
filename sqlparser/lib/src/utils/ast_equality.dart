@@ -500,6 +500,7 @@ class EqualityEnforcingVisitor implements AstVisitor<void, void> {
     final current = _currentAs<DriftTableName>(e);
     _assert(
         current.overriddenDataClassName == e.overriddenDataClassName &&
+            current.constructorName == e.constructorName &&
             current.useExistingDartClass == e.useExistingDartClass,
         e);
   }
@@ -596,6 +597,13 @@ class EqualityEnforcingVisitor implements AstVisitor<void, void> {
   void visitSelectStatementAsSource(SelectStatementAsSource e, void arg) {
     final current = _currentAs<SelectStatementAsSource>(e);
     _assert(current.as == e.as, e);
+    _checkChildren(e);
+  }
+
+  @override
+  void visitSemicolonSeparatedStatements(
+      SemicolonSeparatedStatements e, void arg) {
+    _currentAs<SemicolonSeparatedStatements>(e);
     _checkChildren(e);
   }
 

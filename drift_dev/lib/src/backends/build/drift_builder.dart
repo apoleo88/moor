@@ -1,6 +1,5 @@
 import 'package:build/build.dart';
 import 'package:dart_style/dart_style.dart';
-import 'package:drift_dev/src/writer/tables/table_writer.dart';
 import 'package:pub_semver/pub_semver.dart';
 
 import '../../analysis/custom_result_class.dart';
@@ -14,9 +13,11 @@ import '../../writer/drift_accessor_writer.dart';
 import '../../writer/function_stubs_writer.dart';
 import '../../writer/import_manager.dart';
 import '../../writer/modules.dart';
+import '../../writer/tables/table_writer.dart';
 import '../../writer/tables/view_writer.dart';
 import '../../writer/writer.dart';
 import 'backend.dart';
+import 'exception.dart';
 
 class _BuilderFlags {
   bool didWarnAboutDeprecatedOptions = false;
@@ -53,6 +54,11 @@ enum DriftGenerationMode {
   final bool isPartFile;
 
   const DriftGenerationMode(this.isMonolithic, this.isPartFile);
+
+  /// Whether the user-visible outputs for this builder will be written by the
+  /// combining builder defined in the `source_gen` package.
+  bool get appliesCombiningBuilderFromSourceGen =>
+      this == DriftGenerationMode.monolithicSharedPart;
 
   /// Whether the analysis happens in the generating build step.
   ///
@@ -125,10 +131,18 @@ class _DriftBuildRun {
   late Writer writer;
 
   Set<Uri> analyzedUris = {};
+  bool _didPrintWarning = false;
 
   _DriftBuildRun(this.options, this.mode, this.buildStep)
       : driver = DriftAnalysisDriver(DriftBuildBackend(buildStep), options)
-          ..cacheReader = BuildCacheReader(buildStep);
+          ..cacheReader = BuildCacheReader(
+            buildStep,
+            // The discovery and analyzer builders will have emitted IR for
+            // every relevant file in a previous build step that this builder
+            // has a dependency on.
+            findsResolvedElementsReliably: !mode.embeddedAnalyzer,
+            findsLocalElementsReliably: !mode.embeddedAnalyzer,
+          );
 
   Future<void> run() async {
     await _warnAboutDeprecatedOptions();
@@ -152,6 +166,10 @@ class _DriftBuildRun {
       await _generateModular(fileResult);
     }
     await _emitCode();
+
+    if (_didPrintWarning && options.fatalWarnings) {
+      throw const FatalWarningException();
+    }
   }
 
   Future<FileState> _analyze(Uri uri, {bool isEntrypoint = false}) async {
@@ -162,8 +180,11 @@ class _DriftBuildRun {
     final printErrors =
         isEntrypoint || (mode.isMonolithic && analyzedUris.add(result.ownUri));
     if (printErrors) {
+      // Only printing errors from the fileAnalysis step here. The analyzer
+      // builder will print errors from earlier analysis steps.
       for (final error in result.fileAnalysis?.analysisErrors ?? const []) {
         log.warning(error);
+        _didPrintWarning = true;
       }
     }
 
@@ -184,6 +205,15 @@ class _DriftBuildRun {
         );
       }
 
+      if (mode.appliesCombiningBuilderFromSourceGen &&
+          options.preamble != null) {
+        log.warning(
+          'The `preamble` builder option has no effect on `drift_dev`. Apply '
+          'it to `source_gen:combining_builder` instead: '
+          'https://pub.dev/packages/source_gen#preamble',
+        );
+      }
+
       flags.didWarnAboutDeprecatedOptions = true;
     }
   }
@@ -191,12 +221,10 @@ class _DriftBuildRun {
   /// Checks if the input file contains elements drift should generate code for.
   Future<bool> _checkForElementsToBuild() async {
     if (mode.embeddedAnalyzer) {
-      // Run the discovery step, which we'll have to run either way, to check if
-      // there are any elements to generate code for.
-      final state = await driver.prepareFileForAnalysis(buildStep.inputId.uri,
-          needsDiscovery: true);
-
-      return state.discovery?.locallyDefinedElements.isNotEmpty == true;
+      // Check if there are any elements defined locally that would need code
+      // to be generated for this file.
+      final state = await driver.findLocalElements(buildStep.inputId.uri);
+      return state.definedElements.isNotEmpty;
     } else {
       // An analysis step should have already run for this asset. If we can't
       // pick up results from that, there is no code for drift to generate.
@@ -214,8 +242,8 @@ class _DriftBuildRun {
         buildStep.inputId.extension != '.dart') {
       // For modular drift file generation, we need to know about imports which
       // are only available when discovery ran.
-      await driver.prepareFileForAnalysis(buildStep.inputId.uri,
-          needsDiscovery: true);
+      final state = driver.cache.stateForUri(buildStep.inputId.uri);
+      await driver.discoverIfNecessary(state);
     }
 
     return true;
@@ -280,6 +308,27 @@ class _DriftBuildRun {
         final input =
             AccessorGenerationInput(result, resolved, const {}, driver);
         AccessorWriter(input, writer.child()).write();
+      } else if (result is DefinedSqlQuery) {
+        switch (result.mode) {
+          case QueryMode.regular:
+            // Ignore, this query will be made available in a generated accessor
+            // class.
+            break;
+          case QueryMode.atCreate:
+            final resolved =
+                entrypointState.fileAnalysis?.resolvedQueries[result.id];
+
+            if (resolved != null) {
+              writer.leaf()
+                ..writeDriftRef('OnCreateQuery')
+                ..write(' get ${result.dbGetterName} => ')
+                ..write(DatabaseWriter.createOnCreate(
+                    writer.child(), result, resolved))
+                ..writeln(';');
+            }
+
+            break;
+        }
       }
     }
 
@@ -344,7 +393,7 @@ class _DriftBuildRun {
       );
       writer = Writer(options, generationOptions: generationOptions);
     } else {
-      final imports = LibraryInputManager(buildStep.allowedOutputs.single.uri);
+      final imports = LibraryImportManager(buildStep.allowedOutputs.single.uri);
       final generationOptions = GenerationOptions(
         imports: imports,
         isModular: true,
@@ -356,6 +405,14 @@ class _DriftBuildRun {
 
   Future<void> _emitCode() {
     final output = StringBuffer();
+
+    if (!mode.appliesCombiningBuilderFromSourceGen) {
+      final preamble = options.preamble;
+      if (preamble != null) {
+        output.writeln(preamble);
+      }
+    }
+
     output.writeln('// ignore_for_file: type=lint');
 
     if (mode == DriftGenerationMode.monolithicPart) {
@@ -381,5 +438,5 @@ class _DriftBuildRun {
     return buildStep.writeAsString(buildStep.allowedOutputs.single, code);
   }
 
-  static final Version _minimalDartLanguageVersion = Version(2, 12, 0);
+  static final Version _minimalDartLanguageVersion = Version(2, 13, 0);
 }

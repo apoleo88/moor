@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:sqlparser/sqlparser.dart';
 
 part 'expectation.dart';
@@ -39,6 +41,16 @@ class TypeInferenceSession {
   /// Returns the inferred type of [t], or `null` if it couldn't be inferred.
   ResolvedType? typeOf(Typeable t) {
     return graph[t];
+  }
+
+  ResolvedType? typeOfVariable(int index) {
+    final reference = graph._variables.referenceForIndex(index);
+
+    if (reference != null) {
+      return graph._lookupWithoutNormalization(reference);
+    } else {
+      return null;
+    }
   }
 
   void _addRelation(TypeRelation relationship) {

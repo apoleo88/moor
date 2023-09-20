@@ -1,6 +1,81 @@
-## 2.6.0-dev
+## 2.12.0-dev
 
-- Add `insertReturningOrNull` for empty inserts.
+- Add support for table-valued functions in the Dart query builder.
+- Add the `@TableIndex` annotation for table classes to add an index to the
+  table.
+- Support `json_each` and `json_tree`.
+- Add `TypedResult.readWithConverter` to read a column with a type converter
+  from a join result row.
+
+## 2.11.1
+
+- Allow using `.read()` for a column added to a join from the table, fixing a
+  regression in drift 2.11.0.
+- Make step-by-step migrations easier to customize with `Migrator.runMigrationSteps`.
+
+## 2.11.0
+
+- Add support for subqueries in the Dart query builder.
+- Add `isInExp` and `isNotInExp` to construct `IS IN` expressions with arbitrary
+  expressions.
+- Add the `substr` extension on `Expression<String>` to call the sqlite3 function from
+  the Dart API.
+- Add `isolateSetup` to `NativeDatabase.createInBackground()` to override native libraries
+  or perform other database-unrelated setup work.
+- Add `WasmDatabase.probe()`, a method probing for available implementations and existing
+  databases on the web without opening one directly.
+
+## 2.10.0
+
+- Adds the `schema steps` command to `drift_dev`. It generates an API making it
+  easier to write safe schema migrations ([docs](https://drift.simonbinder.eu/docs/advanced-features/migrations/#step-by-step)).
+- Fix drift WASM not being unusable after a previous database implementation becomes
+  unavailable in the browser.
+
+## 2.9.0
+
+- Forbid `schemaVersion` returning `0`, as this causes issues in the migrator.
+- Drift web support is now stable! By using a `WasmDatabase.open` factory as
+  described in https://drift.simonbinder.eu/web/, you can run a drift database
+  in modern browsers!
+
+## 2.8.2
+
+- Fix prepared statements leaking when the statement cache is disabled.
+- Disable prepared statement caching by default.
+
+## 2.8.1
+
+- Performance improvement: Cache and re-use prepared statements - thanks to [@davidmartos96](https://github.com/davidmartos96/)
+- Fix a deadlock after rolling back a transaction in a remote isolate.
+- Remove unintended log messages when using `connectToDriftWorker`.
+
+## 2.8.0
+
+- Don't keep databases in an unusable state if the `setup` callback throws an
+  exception. Instead, drift will retry the next time the database is used.
+- Allow targeting partial indices in `DoUpdate` ([#2394](https://github.com/simolus3/drift/issues/2394))
+- Fix deadlocks when `computeWithDatabase` is called inside a `transaction()`.
+
+## 2.7.0
+
+- Add support for `CASE` expressions without a base in the Dart API with the
+  `CaseWhenExpression` class.
+- Add the new `package:drift/web/workers.dart` library which makes it easier to
+  create web workers for drift.
+
+## 2.6.0
+
+- Add `insertReturningOrNull` for potentially empty inserts.
+- Add `insertFromSelect` to `InsertStatement` to run `INSERT INTO SELECT`
+  statements.
+- Add `rowid` parameter to companions for tables with rowids that don't have a
+  visible alias for the rowid.
+- After opening a database with a higher schema version than the current one set
+  in the database class, the schema version in the database will now be downgraded.
+- When using a drift isolate in the same engine group, errors on the remote end are
+  reported directly instead of wrapping them in a `DriftRemoteException`.
+- Added support for `DO NOTHING` during upsert operations with constraint violations
 
 ## 2.5.0
 

@@ -116,8 +116,7 @@ class AnnotatedDartCodeBuilder {
   }
 
   void addDartType(DartType type) {
-    final visitor = _AddFromDartType(this);
-    type.accept(visitor);
+    type.accept(_AddFromDartType(this));
   }
 
   void addAstNode(AstNode node, {Set<AstNode> exclude = const {}}) {
@@ -172,6 +171,11 @@ class AnnotatedDartCodeBuilder {
           'This query (${query.name}) does not have a result set');
     }
 
+    addResultSetRowType(resultSet, () => query.resultClassName);
+  }
+
+  void addResultSetRowType(
+      InferredResultSet resultSet, String Function() resultClassName) {
     if (resultSet.existingRowType != null) {
       return addCode(resultSet.existingRowType!.rowType);
     }
@@ -184,12 +188,13 @@ class AnnotatedDartCodeBuilder {
       return addDriftType(resultSet.scalarColumns.single);
     }
 
-    return addText(query.resultClassName);
+    return addText(resultClassName());
   }
 
   void addTypeOfNestedResult(NestedResult nested) {
     if (nested is NestedResultTable) {
-      return addElementRowType(nested.table);
+      return addResultSetRowType(
+          nested.innerResultSet, () => nested.nameForGeneratedRowClass);
     } else if (nested is NestedResultQuery) {
       addSymbol('List', AnnotatedDartCode.dartCore);
       addText('<');
@@ -221,8 +226,10 @@ class DartTopLevelSymbol {
     return DartTopLevelSymbol(name, _driftUri);
   }
 
-  factory DartTopLevelSymbol.topLevelElement(Element element) {
-    assert(element.library?.topLevelElements.contains(element) == true);
+  factory DartTopLevelSymbol.topLevelElement(Element element,
+      [String? elementName]) {
+    assert(element.library?.topLevelElements.contains(element) == true,
+        '${element.name} is not a top-level element');
 
     // We're using this to recover the right import URI when using
     // `package:build`:
@@ -232,7 +239,8 @@ class DartTopLevelSymbol {
       sourceUri = AssetId.resolve(sourceUri).uri;
     }
 
-    return DartTopLevelSymbol(element.name ?? '(???)', sourceUri);
+    return DartTopLevelSymbol(
+        elementName ?? element.name ?? '(???)', sourceUri);
   }
 
   factory DartTopLevelSymbol.fromJson(Map json) =>
@@ -246,7 +254,7 @@ class DartTopLevelSymbol {
 ///
 /// This representation allwos emitting the Dart type with relevant imports
 /// managed dynamically.
-class _AddFromDartType extends TypeVisitor<void> {
+class _AddFromDartType extends UnifyingTypeVisitor<void> {
   final AnnotatedDartCodeBuilder _builder;
 
   _AddFromDartType(this._builder);
@@ -262,6 +270,14 @@ class _AddFromDartType extends TypeVisitor<void> {
       case NullabilitySuffix.none:
         return;
     }
+  }
+
+  @override
+  void visitDartType(DartType type) {
+    _builder
+      ..addText('dynamic')
+      ..addText(
+          '/* unhandled ${type.getDisplayString(withNullability: true)} */');
   }
 
   @override
@@ -302,7 +318,6 @@ class _AddFromDartType extends TypeVisitor<void> {
   @override
   void visitDynamicType(DynamicType type) {
     _builder.addText('dynamic');
-    _writeSuffix(type.nullabilitySuffix);
   }
 
   @override
@@ -397,6 +412,13 @@ class _AddFromDartType extends TypeVisitor<void> {
   }
 
   @override
+  void visitInvalidType(InvalidType type) {
+    _builder
+      ..addText('dynamic')
+      ..addText('/* = invalid*/');
+  }
+
+  @override
   void visitNeverType(NeverType type) {
     _builder.addText('Never');
     _writeSuffix(type.nullabilitySuffix);
@@ -420,6 +442,15 @@ class _AddFromAst extends GeneralizingAstVisitor<void> {
   final Set<AstNode> _excluding;
 
   _AddFromAst(this._builder, this._excluding);
+
+  void _addTopLevelReference(Element? element, Token name2) {
+    if (element == null || (element.isSynthetic && element.library == null)) {
+      _builder.addText(name2.lexeme);
+    } else {
+      _builder.addTopLevel(
+          DartTopLevelSymbol.topLevelElement(element, name2.lexeme));
+    }
+  }
 
   @override
   void visitNode(AstNode node) {
@@ -455,6 +486,18 @@ class _AddFromAst extends GeneralizingAstVisitor<void> {
     }
 
     _builder.addText(')');
+  }
+
+  @override
+  void visitExtensionOverride(ExtensionOverride node) {
+    _addTopLevelReference(node.element, node.name); // Transform identifier
+    node.typeArguments?.accept(this);
+    node.argumentList.accept(this);
+  }
+
+  @override
+  void visitNamedType(NamedType node) {
+    _addTopLevelReference(node.element, node.name2);
   }
 
   @override

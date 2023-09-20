@@ -24,6 +24,14 @@ class NodeSqlBuilder extends AstVisitor<void, void> {
     }
   }
 
+  bool isKeyword(String lexeme) {
+    return isKeywordLexeme(lexeme);
+  }
+
+  String escapeIdentifier(String identifier) {
+    return '"$identifier"';
+  }
+
   @override
   void visitAggregateFunctionInvocation(
       AggregateFunctionInvocation e, void arg) {
@@ -368,6 +376,8 @@ class NodeSqlBuilder extends AstVisitor<void, void> {
 
       keyword(TokenType.strict);
     }
+
+    e.driftTableName?.accept(this, arg);
   }
 
   @override
@@ -501,6 +511,11 @@ class NodeSqlBuilder extends AstVisitor<void, void> {
     } else if (e is DriftTableName) {
       keyword(e.useExistingDartClass ? TokenType.$with : TokenType.as);
       identifier(e.overriddenDataClassName);
+      final constructor = e.constructorName;
+      if (constructor != null) {
+        symbol('.');
+        identifier(constructor);
+      }
     } else if (e is NestedStarResultColumn) {
       identifier(e.tableName);
       symbol('.**', spaceAfter: true);
@@ -1036,6 +1051,16 @@ class NodeSqlBuilder extends AstVisitor<void, void> {
   }
 
   @override
+  void visitSemicolonSeparatedStatements(
+      SemicolonSeparatedStatements e, void arg) {
+    for (final stmt in e.statements) {
+      visit(stmt, arg);
+      buffer.writeln(';');
+      needsSpace = false;
+    }
+  }
+
+  @override
   void visitSetComponent(SetComponent e, void arg) {
     visit(e.column, arg);
     symbol('=', spaceBefore: true, spaceAfter: true);
@@ -1321,8 +1346,8 @@ class NodeSqlBuilder extends AstVisitor<void, void> {
   /// Writes an identifier, escaping it if necessary.
   void identifier(String identifier,
       {bool spaceBefore = true, bool spaceAfter = true}) {
-    if (isKeywordLexeme(identifier) || _notAKeywordRegex.hasMatch(identifier)) {
-      identifier = '"$identifier"';
+    if (isKeyword(identifier) || _notAKeywordRegex.hasMatch(identifier)) {
+      identifier = escapeIdentifier(identifier);
     }
 
     symbol(identifier, spaceBefore: spaceBefore, spaceAfter: spaceAfter);

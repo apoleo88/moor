@@ -214,7 +214,7 @@ abstract class SingleOrNullSelectable<T> {
 /// {@macro drift_multi_selectable_example}
 /// {@macro drift_single_selectable_example}
 /// {@macro drift_single_or_null_selectable_example}
-abstract class Selectable<T>
+abstract mixin class Selectable<T>
     implements
         MultiSelectable<T>,
         SingleSelectable<T>,
@@ -267,7 +267,7 @@ abstract class Selectable<T>
   /// Maps this selectable by the [mapper] function.
   ///
   /// Like [map] just async.
-  Selectable<N> asyncMap<N>(Future<N> Function(T) mapper) {
+  Selectable<N> asyncMap<N>(FutureOr<N> Function(T) mapper) {
     return _AsyncMappedSelectable<T, N>(this, mapper);
   }
 }
@@ -293,7 +293,7 @@ class _MappedSelectable<S, T> extends Selectable<T> {
 
 class _AsyncMappedSelectable<S, T> extends Selectable<T> {
   final Selectable<S> _source;
-  final Future<T> Function(S) _mapper;
+  final FutureOr<T> Function(S) _mapper;
 
   _AsyncMappedSelectable(this._source, this._mapper);
 
@@ -304,11 +304,13 @@ class _AsyncMappedSelectable<S, T> extends Selectable<T> {
 
   @override
   Stream<List<T>> watch() {
-    return _source.watch().asyncMap(_mapResults);
+    return AsyncMapPerSubscription(_source.watch())
+        .asyncMapPerSubscription(_mapResults);
   }
 
-  Future<List<T>> _mapResults(List<S> results) async =>
-      [for (final result in results) await _mapper(result)];
+  Future<List<T>> _mapResults(List<S> results) async {
+    return [for (final result in results) await _mapper(result)];
+  }
 }
 
 /// Mixin for a [Query] that operates on a single primary table only.

@@ -187,9 +187,9 @@ class _StatementBasedTransactionExecutor extends _TransactionExecutor {
   _StatementBasedTransactionExecutor.nested(
       _StatementBasedTransactionExecutor this._parent, int depth)
       : _delegate = _parent._delegate,
-        _startCommand = 'SAVEPOINT s$depth',
-        _commitCommand = 'RELEASE s$depth',
-        _rollbackCommand = 'ROLLBACK TO s$depth',
+        _startCommand = _parent._delegate.savepoint(depth),
+        _commitCommand = _parent._delegate.release(depth),
+        _rollbackCommand = _parent._delegate.rollbackToSavepoint(depth),
         super(_parent._db);
 
   @override
@@ -458,7 +458,7 @@ class DelegatedDatabase extends _BaseExecutor {
     await user.beforeOpen(_BeforeOpeningExecutor(this), openingDetails);
 
     if (versionDelegate is DynamicVersionDelegate &&
-        (oldVersion == null || oldVersion < currentVersion)) {
+        oldVersion != currentVersion) {
       // set version now, after migrations ran successfully
       await versionDelegate.setSchemaVersion(currentVersion);
     }

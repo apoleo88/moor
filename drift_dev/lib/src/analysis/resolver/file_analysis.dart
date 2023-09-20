@@ -1,4 +1,3 @@
-import 'package:drift_dev/src/analysis/resolver/drift/sqlparser/mapping.dart';
 import 'package:sqlparser/sqlparser.dart';
 
 import '../../utils/entity_reference_sorter.dart';
@@ -8,6 +7,7 @@ import '../driver/state.dart';
 import '../results/file_results.dart';
 import '../results/results.dart';
 import 'dart/helper.dart';
+import 'drift/sqlparser/mapping.dart';
 import 'queries/query_analyzer.dart';
 import 'queries/required_variables.dart';
 
@@ -42,16 +42,60 @@ class FileAnalyzer {
             await driver.resolveElements(import.ownUri);
           }
 
+          final availableByDefault = <DriftSchemaElement>{
+            ...element.declaredTables,
+            ...element.declaredViews,
+          };
+
+          // For indices added to tables via an annotation, the index should
+          // also be available.
+          for (final table in element.declaredTables) {
+            final fileState = driver.cache.knownFiles[table.id.libraryUri]!;
+
+            for (final attachedIndex in table.attachedIndices) {
+              final index =
+                  fileState.analysis[fileState.id(attachedIndex)]?.result;
+              if (index is DriftIndex) {
+                availableByDefault.add(index);
+              }
+            }
+          }
+
           final availableElements = imported
               .expand((reachable) {
                 final elementAnalysis = reachable.analysis.values;
+
                 return elementAnalysis.map((e) => e.result).where(
                     (e) => e is DefinedSqlQuery || e is DriftSchemaElement);
               })
               .whereType<DriftElement>()
-              .followedBy(element.references)
+              .followedBy(availableByDefault)
               .transitiveClosureUnderReferences()
               .sortTopologicallyOrElse(driver.backend.log.severe);
+
+          // We will generate code for all available elements - even those only
+          // reachable through imports. If that means we're pulling in a table
+          // from a Dart file that hasn't been added to `tables`, emit a warning.
+          // https://github.com/simolus3/drift/issues/2462#issuecomment-1620107751
+          if (element is DriftDatabase) {
+            final implicitlyAdded = availableElements
+                .whereType<DriftElementWithResultSet>()
+                .where((element) =>
+                    element.declaration.isDartDeclaration &&
+                    !availableByDefault.contains(element));
+
+            if (implicitlyAdded.isNotEmpty) {
+              final names = implicitlyAdded
+                  .map((e) => e.definingDartClass?.toString() ?? e.schemaName)
+                  .join(', ');
+
+              driver.backend.log.warning(
+                'Due to includes added to the database, the following Dart '
+                'tables which have not been added to `tables` or `views` will '
+                'be included in this database: $names',
+              );
+            }
+          }
 
           for (final query in element.declaredQueries) {
             final engine =
@@ -69,6 +113,9 @@ class FileAnalyzer {
 
           result.resolvedDatabases[element.id] =
               ResolvedDatabaseAccessor(queries, imports, availableElements);
+        } else if (element is DriftIndex) {
+          // We need the SQL AST for each index to create them in code
+          element.createStatementForDartDefinition();
         }
       }
     } else if (state.extension == '.drift' || state.extension == '.moor') {

@@ -32,7 +32,9 @@ DriftOptions _$DriftOptionsFromJson(Map json) => $checkedCreate(
             'scoped_dart_components',
             'store_date_time_values_as_text',
             'case_from_dart_to_sql',
-            'write_to_columns_mixins'
+            'write_to_columns_mixins',
+            'preamble',
+            'fatal_warnings'
           ],
         );
         final val = DriftOptions(
@@ -86,6 +88,9 @@ DriftOptions _$DriftOptionsFromJson(Map json) => $checkedCreate(
                   CaseFromDartToSql.snake),
           writeToColumnsMixins: $checkedConvert(
               'write_to_columns_mixins', (v) => v as bool? ?? false),
+          fatalWarnings:
+              $checkedConvert('fatal_warnings', (v) => v as bool? ?? false),
+          preamble: $checkedConvert('preamble', (v) => v as String?),
           dialect: $checkedConvert('sql',
               (v) => v == null ? null : DialectOptions.fromJson(v as Map)),
         );
@@ -114,6 +119,7 @@ DriftOptions _$DriftOptionsFromJson(Map json) => $checkedCreate(
         'storeDateTimeValuesAsText': 'store_date_time_values_as_text',
         'caseFromDartToSql': 'case_from_dart_to_sql',
         'writeToColumnsMixins': 'write_to_columns_mixins',
+        'fatalWarnings': 'fatal_warnings',
         'dialect': 'sql'
       },
     );
@@ -147,6 +153,8 @@ Map<String, dynamic> _$DriftOptionsToJson(DriftOptions instance) =>
       'case_from_dart_to_sql':
           _$CaseFromDartToSqlEnumMap[instance.caseFromDartToSql]!,
       'write_to_columns_mixins': instance.writeToColumnsMixins,
+      'preamble': instance.preamble,
+      'fatal_warnings': instance.fatalWarnings,
     };
 
 const _$SqlModuleEnumMap = {
@@ -174,11 +182,16 @@ DialectOptions _$DialectOptionsFromJson(Map json) => $checkedCreate(
       ($checkedConvert) {
         $checkKeys(
           json,
-          allowedKeys: const ['dialect', 'options'],
+          allowedKeys: const ['dialect', 'dialects', 'options'],
         );
         final val = DialectOptions(
           $checkedConvert(
-              'dialect', (v) => $enumDecode(_$SqlDialectEnumMap, v)),
+              'dialect', (v) => $enumDecodeNullable(_$SqlDialectEnumMap, v)),
+          $checkedConvert(
+              'dialects',
+              (v) => (v as List<dynamic>?)
+                  ?.map((e) => $enumDecode(_$SqlDialectEnumMap, e))
+                  .toList()),
           $checkedConvert(
               'options',
               (v) =>
@@ -190,7 +203,9 @@ DialectOptions _$DialectOptionsFromJson(Map json) => $checkedCreate(
 
 Map<String, dynamic> _$DialectOptionsToJson(DialectOptions instance) =>
     <String, dynamic>{
-      'dialect': _$SqlDialectEnumMap[instance.dialect]!,
+      'dialect': _$SqlDialectEnumMap[instance.dialect],
+      'dialects':
+          instance.dialects?.map((e) => _$SqlDialectEnumMap[e]!).toList(),
       'options': instance.options?.toJson(),
     };
 
@@ -198,6 +213,7 @@ const _$SqlDialectEnumMap = {
   SqlDialect.sqlite: 'sqlite',
   SqlDialect.mysql: 'mysql',
   SqlDialect.postgres: 'postgres',
+  SqlDialect.mariadb: 'mariadb',
 };
 
 SqliteAnalysisOptions _$SqliteAnalysisOptionsFromJson(Map json) =>

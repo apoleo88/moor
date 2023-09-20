@@ -10,13 +10,16 @@ class $UsersTable extends Users with TableInfo<$UsersTable, User> {
   $UsersTable(this.attachedDatabase, [this._alias]);
   static const VerificationMeta _idMeta = const VerificationMeta('id');
   @override
-  late final GeneratedColumn<int> id = GeneratedColumn<int>(
-      'id', aliasedName, false,
-      hasAutoIncrement: true,
-      type: DriftSqlType.int,
-      requiredDuringInsert: false,
-      defaultConstraints:
-          GeneratedColumn.constraintIsAlways('PRIMARY KEY AUTOINCREMENT'));
+  late final GeneratedColumn<int> id =
+      GeneratedColumn<int>('id', aliasedName, false,
+          hasAutoIncrement: true,
+          type: DriftSqlType.int,
+          requiredDuringInsert: false,
+          defaultConstraints: GeneratedColumn.constraintsDependsOnDialect({
+            SqlDialect.sqlite: 'PRIMARY KEY AUTOINCREMENT',
+            SqlDialect.postgres: 'PRIMARY KEY AUTOINCREMENT',
+            SqlDialect.mariadb: 'PRIMARY KEY AUTO_INCREMENT',
+          }));
   static const VerificationMeta _nameMeta = const VerificationMeta('name');
   @override
   late final GeneratedColumn<String> name = GeneratedColumn<String>(
@@ -336,8 +339,8 @@ class $FriendshipsTable extends Friendships
           requiredDuringInsert: false,
           defaultConstraints: GeneratedColumn.constraintsDependsOnDialect({
             SqlDialect.sqlite: 'CHECK ("really_good_friends" IN (0, 1))',
-            SqlDialect.mysql: '',
             SqlDialect.postgres: '',
+            SqlDialect.mariadb: 'CHECK (`really_good_friends` IN (0, 1))',
           }),
           defaultValue: const Constant(false));
   @override
@@ -477,37 +480,44 @@ class FriendshipsCompanion extends UpdateCompanion<Friendship> {
   final Value<int> firstUser;
   final Value<int> secondUser;
   final Value<bool> reallyGoodFriends;
+  final Value<int> rowid;
   const FriendshipsCompanion({
     this.firstUser = const Value.absent(),
     this.secondUser = const Value.absent(),
     this.reallyGoodFriends = const Value.absent(),
+    this.rowid = const Value.absent(),
   });
   FriendshipsCompanion.insert({
     required int firstUser,
     required int secondUser,
     this.reallyGoodFriends = const Value.absent(),
+    this.rowid = const Value.absent(),
   })  : firstUser = Value(firstUser),
         secondUser = Value(secondUser);
   static Insertable<Friendship> custom({
     Expression<int>? firstUser,
     Expression<int>? secondUser,
     Expression<bool>? reallyGoodFriends,
+    Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (firstUser != null) 'first_user': firstUser,
       if (secondUser != null) 'second_user': secondUser,
       if (reallyGoodFriends != null) 'really_good_friends': reallyGoodFriends,
+      if (rowid != null) 'rowid': rowid,
     });
   }
 
   FriendshipsCompanion copyWith(
       {Value<int>? firstUser,
       Value<int>? secondUser,
-      Value<bool>? reallyGoodFriends}) {
+      Value<bool>? reallyGoodFriends,
+      Value<int>? rowid}) {
     return FriendshipsCompanion(
       firstUser: firstUser ?? this.firstUser,
       secondUser: secondUser ?? this.secondUser,
       reallyGoodFriends: reallyGoodFriends ?? this.reallyGoodFriends,
+      rowid: rowid ?? this.rowid,
     );
   }
 
@@ -523,6 +533,9 @@ class FriendshipsCompanion extends UpdateCompanion<Friendship> {
     if (reallyGoodFriends.present) {
       map['really_good_friends'] = Variable<bool>(reallyGoodFriends.value);
     }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
     return map;
   }
 
@@ -531,7 +544,8 @@ class FriendshipsCompanion extends UpdateCompanion<Friendship> {
     return (StringBuffer('FriendshipsCompanion(')
           ..write('firstUser: $firstUser, ')
           ..write('secondUser: $secondUser, ')
-          ..write('reallyGoodFriends: $reallyGoodFriends')
+          ..write('reallyGoodFriends: $reallyGoodFriends, ')
+          ..write('rowid: $rowid')
           ..write(')'))
         .toString();
   }
@@ -543,7 +557,15 @@ abstract class _$Database extends GeneratedDatabase {
   late final $FriendshipsTable friendships = $FriendshipsTable(this);
   Selectable<User> mostPopularUsers(int amount) {
     return customSelect(
-        'SELECT * FROM users AS u ORDER BY (SELECT COUNT(*) FROM friendships WHERE first_user = u.id OR second_user = u.id) DESC LIMIT @1',
+        switch (executor.dialect) {
+          SqlDialect.sqlite =>
+            'SELECT * FROM users AS u ORDER BY (SELECT COUNT(*) FROM friendships WHERE first_user = u.id OR second_user = u.id) DESC LIMIT ?1',
+          SqlDialect.postgres =>
+            'SELECT * FROM users AS u ORDER BY (SELECT COUNT(*) FROM friendships WHERE first_user = u.id OR second_user = u.id) DESC LIMIT \$1',
+          SqlDialect.mariadb ||
+          _ =>
+            'SELECT * FROM users AS u ORDER BY (SELECT COUNT(*) FROM friendships WHERE first_user = u.id OR second_user = u.id) DESC LIMIT ?',
+        },
         variables: [
           Variable<int>(amount)
         ],
@@ -555,10 +577,21 @@ abstract class _$Database extends GeneratedDatabase {
 
   Selectable<int> amountOfGoodFriends(int user) {
     return customSelect(
-        'SELECT COUNT(*) AS _c0 FROM friendships AS f WHERE f.really_good_friends = 1 AND(f.first_user = @1 OR f.second_user = @1)',
-        variables: [
+        switch (executor.dialect) {
+          SqlDialect.sqlite =>
+            'SELECT COUNT(*) AS _c0 FROM friendships AS f WHERE f.really_good_friends = TRUE AND(f.first_user = ?1 OR f.second_user = ?1)',
+          SqlDialect.postgres =>
+            'SELECT COUNT(*) AS _c0 FROM friendships AS f WHERE f.really_good_friends = TRUE AND(f.first_user = \$1 OR f.second_user = \$1)',
+          SqlDialect.mariadb ||
+          _ =>
+            'SELECT COUNT(*) AS _c0 FROM friendships AS f WHERE f.really_good_friends = TRUE AND(f.first_user = ? OR f.second_user = ?)',
+        },
+        variables: executor.dialect.desugarDuplicateVariables([
           Variable<int>(user)
-        ],
+        ], [
+          1,
+          1,
+        ]),
         readsFrom: {
           friendships,
         }).map((QueryRow row) => row.read<int>('_c0'));
@@ -566,19 +599,29 @@ abstract class _$Database extends GeneratedDatabase {
 
   Selectable<FriendshipsOfResult> friendshipsOf(int user) {
     return customSelect(
-        'SELECT f.really_good_friends,"user"."id" AS "nested_0.id", "user"."name" AS "nested_0.name", "user"."birth_date" AS "nested_0.birth_date", "user"."profile_picture" AS "nested_0.profile_picture", "user"."preferences" AS "nested_0.preferences" FROM friendships AS f INNER JOIN users AS user ON user.id IN (f.first_user, f.second_user) AND user.id != @1 WHERE(f.first_user = @1 OR f.second_user = @1)',
-        variables: [
+        switch (executor.dialect) {
+          SqlDialect.sqlite =>
+            'SELECT f.really_good_friends,"user"."id" AS "nested_0.id", "user"."name" AS "nested_0.name", "user"."birth_date" AS "nested_0.birth_date", "user"."profile_picture" AS "nested_0.profile_picture", "user"."preferences" AS "nested_0.preferences" FROM friendships AS f INNER JOIN users AS user ON user.id IN (f.first_user, f.second_user) AND user.id != ?1 WHERE(f.first_user = ?1 OR f.second_user = ?1)',
+          SqlDialect.postgres =>
+            'SELECT f.really_good_friends,"user"."id" AS "nested_0.id", "user"."name" AS "nested_0.name", "user"."birth_date" AS "nested_0.birth_date", "user"."profile_picture" AS "nested_0.profile_picture", "user"."preferences" AS "nested_0.preferences" FROM friendships AS f INNER JOIN users AS "user" ON "user".id IN (f.first_user, f.second_user) AND "user".id != \$1 WHERE(f.first_user = \$1 OR f.second_user = \$1)',
+          SqlDialect.mariadb ||
+          _ =>
+            'SELECT f.really_good_friends,`user`.`id` AS `nested_0.id`, `user`.`name` AS `nested_0.name`, `user`.`birth_date` AS `nested_0.birth_date`, `user`.`profile_picture` AS `nested_0.profile_picture`, `user`.`preferences` AS `nested_0.preferences` FROM friendships AS f INNER JOIN users AS user ON user.id IN (f.first_user, f.second_user) AND user.id != ? WHERE(f.first_user = ? OR f.second_user = ?)',
+        },
+        variables: executor.dialect.desugarDuplicateVariables([
           Variable<int>(user)
-        ],
+        ], [
+          1,
+          1,
+          1,
+        ]),
         readsFrom: {
           friendships,
           users,
-        }).asyncMap((QueryRow row) async {
-      return FriendshipsOfResult(
-        reallyGoodFriends: row.read<bool>('really_good_friends'),
-        user: await users.mapFromRow(row, tablePrefix: 'nested_0'),
-      );
-    });
+        }).asyncMap((QueryRow row) async => FriendshipsOfResult(
+          reallyGoodFriends: row.read<bool>('really_good_friends'),
+          user: await users.mapFromRow(row, tablePrefix: 'nested_0'),
+        ));
   }
 
   Selectable<int> userCount() {
@@ -590,7 +633,14 @@ abstract class _$Database extends GeneratedDatabase {
   }
 
   Selectable<Preferences?> settingsFor(int user) {
-    return customSelect('SELECT preferences FROM users WHERE id = @1',
+    return customSelect(
+        switch (executor.dialect) {
+          SqlDialect.sqlite => 'SELECT preferences FROM users WHERE id = ?1',
+          SqlDialect.postgres => 'SELECT preferences FROM users WHERE id = \$1',
+          SqlDialect.mariadb ||
+          _ =>
+            'SELECT preferences FROM users WHERE id = ?',
+        },
         variables: [
           Variable<int>(user)
         ],
@@ -615,7 +665,15 @@ abstract class _$Database extends GeneratedDatabase {
 
   Future<List<Friendship>> returning(int var1, int var2, bool var3) {
     return customWriteReturning(
-        'INSERT INTO friendships VALUES (@1, @2, @3) RETURNING *',
+        switch (executor.dialect) {
+          SqlDialect.sqlite =>
+            'INSERT INTO friendships VALUES (?1, ?2, ?3) RETURNING *',
+          SqlDialect.postgres =>
+            'INSERT INTO friendships VALUES (\$1, \$2, \$3) RETURNING *',
+          SqlDialect.mariadb ||
+          _ =>
+            'INSERT INTO friendships VALUES (?, ?, ?) RETURNING *',
+        },
         variables: [
           Variable<int>(var1),
           Variable<int>(var2),

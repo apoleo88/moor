@@ -94,4 +94,53 @@ extension GroupByQueries on MyDatabase {
     return query.map((row) => row.readTable(otherTodos)).get();
   }
   // #enddocregion otherTodosInSameCategory
+
+  // #docregion createCategoryForUnassignedTodoEntries
+  Future<void> createCategoryForUnassignedTodoEntries() async {
+    final newDescription = Variable<String>('category for: ') + todos.title;
+    final query = selectOnly(todos)
+      ..where(todos.category.isNull())
+      ..addColumns([newDescription]);
+
+    await into(categories).insertFromSelect(query, columns: {
+      categories.description: newDescription,
+    });
+  }
+  // #enddocregion createCategoryForUnassignedTodoEntries
+
+  // #docregion subquery
+  Future<List<(Category, int)>> amountOfLengthyTodoItemsPerCategory() async {
+    final longestTodos = Subquery(
+      select(todos)
+        ..orderBy([(row) => OrderingTerm.desc(row.title.length)])
+        ..limit(10),
+      's',
+    );
+
+    // In the main query, we want to count how many entries in longestTodos were
+    // found for each category. But we can't access todos.title directly since
+    // we're not selecting from `todos`. Instead, we'll use Subquery.ref to read
+    // from a column in a subquery.
+    final itemCount = longestTodos.ref(todos.title).count();
+    final query = select(categories).join(
+      [
+        innerJoin(
+          longestTodos,
+          // Again using .ref() here to access the category in the outer select
+          // statement.
+          longestTodos.ref(todos.category).equalsExp(categories.id),
+          useColumns: false,
+        )
+      ],
+    )
+      ..addColumns([itemCount])
+      ..groupBy([categories.id]);
+
+    final rows = await query.get();
+
+    return [
+      for (final row in rows) (row.readTable(categories), row.read(itemCount)!),
+    ];
+  }
+  // #enddocregion subquery
 }

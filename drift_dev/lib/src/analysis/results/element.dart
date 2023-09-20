@@ -78,6 +78,8 @@ abstract class DriftElement {
   final DriftElementId id;
   final DriftDeclaration declaration;
 
+  DriftElementKind get kind;
+
   /// All elements referenced by this element.
   ///
   /// References include the following:
@@ -86,6 +88,11 @@ abstract class DriftElement {
   ///  - tables referenced in the body of a view, index, or trigger declaration.
   ///  - tables included in the `@DriftDatabase` annotation.
   Iterable<DriftElement> get references => const Iterable.empty();
+
+  /// The getter in a generated database accessor referring to this model.
+  ///
+  /// Returns null for entities that shouldn't have a getter.
+  String? get dbGetterName => null;
 
   /// If this element was extracted from a defined Dart class, returns the name
   /// of that class.
@@ -99,16 +106,23 @@ abstract class DriftElement {
   DriftElement(this.id, this.declaration);
 }
 
+enum DriftElementKind {
+  table,
+  view,
+  dbIndex,
+  trigger,
+  database,
+  databaseAccessor,
+  definedQuery;
+
+  static Map<String, DriftElementKind> byName = values.asNameMap();
+}
+
 abstract class DriftSchemaElement extends DriftElement {
   DriftSchemaElement(super.id, super.declaration);
 
   /// The exact, unaliased name of this element in the database's schema.
   String get schemaName => id.name;
-
-  /// The getter in a generated database accessor referring to this model.
-  ///
-  /// Returns null for entities that shouldn't have a getter.
-  String? get dbGetterName;
 
   static String dbFieldName(String baseName) {
     return ReCase(baseName).camelCase;

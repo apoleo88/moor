@@ -3,8 +3,15 @@ data:
   title: "Experimental IDE"
   weight: 5
   description: Get real-time feedback as you type sql
+  hidden: true
 template: layouts/docs/single
 ---
+
+{% block "blocks/pageinfo" %}
+__This page is outdated, and the drift analysis plugin is not currently available__.
+It may be re-enabled in a future drift version.
+{% endblock %}
+
 
 Drift ships with an experimental analyzer plugin that provides real-time feedback on errors,
 hints, folding and outline.

@@ -11,10 +11,14 @@ import '../results/query.dart';
 import 'driver.dart';
 import 'error.dart';
 
+typedef DriftImport = ({Uri uri, bool transitive});
+
 class FileState {
   final Uri ownUri;
 
   DiscoveredFileState? discovery;
+  CachedDiscoveryResults? cachedDiscovery;
+
   final List<DriftAnalysisError> errorsDuringDiscovery = [];
 
   final Map<DriftElementId, ElementAnalysisState> analysis = {};
@@ -24,11 +28,31 @@ class FileState {
 
   FileState(this.ownUri);
 
+  bool get isValidImport {
+    return (cachedDiscovery?.isValidImport ?? discovery?.isValidImport) == true;
+  }
+
+  Iterable<DriftImport>? get imports =>
+      discovery?.importDependencies ?? cachedDiscovery?.imports;
+
   String get extension => url.extension(ownUri.path);
 
   /// Whether this file contains a drift database or a drift accessor / DAO.
   bool get containsDatabaseAccessor {
     return analyzedElements.any((e) => e is BaseDriftAccessor);
+  }
+
+  Iterable<ExistingDriftElement> get definedElements {
+    final discovery = this.discovery;
+    final cached = cachedDiscovery;
+
+    if (discovery != null) {
+      return discovery.locallyDefinedElements;
+    } else if (cached != null) {
+      return cached.locallyDefinedElements;
+    } else {
+      return const Iterable.empty();
+    }
   }
 
   /// All analyzed [DriftElement]s found in this library.
@@ -63,11 +87,12 @@ class FileState {
   }
 
   bool get _definesQuery {
-    return analyzedElements.any((e) => e is DefinedSqlQuery) ||
+    return analyzedElements
+            .any((e) => e is DefinedSqlQuery && e.mode == QueryMode.regular) ||
         // Also check discovery, we might not have analyzed all elements in this
         // file if it's just an import.
-        discovery?.locallyDefinedElements
-                .any((e) => e is DiscoveredDriftStatement) ==
+        discovery?.locallyDefinedElements.any((e) =>
+                e is DiscoveredDriftStatement && e.sqlNode.isRegularQuery) ==
             true;
   }
 
@@ -85,12 +110,24 @@ class FileState {
   }
 }
 
+class CachedDiscoveryResults {
+  final bool isValidImport;
+  final List<DriftImport> imports;
+  final List<ExistingDriftElement> locallyDefinedElements;
+
+  CachedDiscoveryResults(
+    this.isValidImport,
+    this.imports,
+    this.locallyDefinedElements,
+  );
+}
+
 abstract class DiscoveredFileState {
   final List<DiscoveredElement> locallyDefinedElements;
 
   bool get isValidImport => false;
 
-  Iterable<Uri> get importDependencies => const [];
+  Iterable<DriftImport> get importDependencies => const [];
 
   DiscoveredFileState(this.locallyDefinedElements);
 }
@@ -104,7 +141,12 @@ class DiscoveredDriftFile extends DiscoveredFileState {
   bool get isValidImport => true;
 
   @override
-  Iterable<Uri> get importDependencies => imports.map((e) => e.importedUri);
+  Iterable<DriftImport> get importDependencies => imports.map((e) => (
+        uri: e.importedUri,
+        // Imports in drift files are always transitive (visible to files
+        // importing this drift file).
+        transitive: true,
+      ));
 
   DiscoveredDriftFile({
     required this.originalSource,
@@ -125,9 +167,16 @@ class DiscoveredDartLibrary extends DiscoveredFileState {
   final LibraryElement library;
 
   @override
+  final List<DriftImport> importDependencies;
+
+  @override
   bool get isValidImport => true;
 
-  DiscoveredDartLibrary(this.library, super.locallyDefinedElements);
+  DiscoveredDartLibrary(
+    this.library,
+    super.locallyDefinedElements,
+    this.importDependencies,
+  );
 }
 
 class NotADartLibrary extends DiscoveredFileState {
@@ -142,8 +191,31 @@ class UnknownFile extends DiscoveredFileState {
   UnknownFile() : super(const []);
 }
 
-abstract class DiscoveredElement {
+class ExistingDriftElement {
   final DriftElementId ownId;
+  final DriftElementKind kind;
+
+  /// When this element was defined via a Dart class, the name of that class.
+  ///
+  /// Together with the [DriftElementId.libraryUri] of the [id], this can be
+  /// used to find the Drift element for an [Element] without resolving all
+  /// available imports multiple times.
+  final String? dartElementName;
+
+  ExistingDriftElement({
+    required this.ownId,
+    required this.kind,
+    this.dartElementName,
+  });
+}
+
+/// Information about the syntax of a known drift element which can be used to
+/// fully resolve it.
+abstract class DiscoveredElement implements ExistingDriftElement {
+  @override
+  final DriftElementId ownId;
+  @override
+  DriftElementKind get kind;
 
   DiscoveredElement(this.ownId);
 

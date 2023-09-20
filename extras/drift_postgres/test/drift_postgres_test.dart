@@ -1,19 +1,24 @@
 import 'package:drift_postgres/postgres.dart';
 import 'package:drift_testcases/tests.dart';
-import 'package:postgres/postgres.dart';
+import 'package:postgres/postgres_v3_experimental.dart';
 
 class PgExecutor extends TestExecutor {
   @override
   bool get supportsReturning => true;
 
   @override
-  bool get hackyVariables => true;
+  bool get supportsNestedTransactions => true;
 
   @override
   DatabaseConnection createConnection() {
-    final pgConnection = PostgreSQLConnection('localhost', 5432, 'postgres',
-        username: 'postgres', password: 'postgres');
-    return DatabaseConnection(PgDatabase(pgConnection));
+    return DatabaseConnection(PgDatabase(
+      endpoint: PgEndpoint(
+        host: 'localhost',
+        database: 'postgres',
+        username: 'postgres',
+        password: 'postgres',
+      ),
+    ));
   }
 
   @override

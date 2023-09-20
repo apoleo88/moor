@@ -129,7 +129,7 @@ void main() {
 
     await Isolate.spawn(_createBackground, spawned.sendPort,
         onExit: done.sendPort);
-    // The isolate shold eventually exit!
+    // The isolate should eventually exit!
     expect(done.first, completion(anything));
 
     final drift = await spawned.first as DriftIsolate;
@@ -142,7 +142,7 @@ void main() {
 
     await Isolate.spawn(_createBackground, spawned.sendPort,
         onExit: done.sendPort);
-    // The isolate shold eventually exit!
+    // The isolate should eventually exit!
     expect(done.first, completion(anything));
 
     final drift = await spawned.first as DriftIsolate;
@@ -195,6 +195,30 @@ void main() {
               descriptionInUpperCase: 'FROM REMOTE ISOLATE!',
             )
           ]));
+
+      // Make sure database still works after computeWithDatabase
+      // https://github.com/simolus3/drift/issues/2279#issuecomment-1455385439
+      await db.customSelect('SELECT 1').get();
+
+      // This should still work when computeWithDatabase is called in a
+      // transaction.
+      await db.transaction(() async {
+        await db.into(db.categories).insert(
+            CategoriesCompanion.insert(description: 'main / transaction'));
+
+        await db.computeWithDatabase(
+          computation: (db) async {
+            await db.batch((batch) {
+              batch.insert(
+                db.categories,
+                CategoriesCompanion.insert(description: 'nested remote batch!'),
+              );
+            });
+          },
+          connect: TodoDb.new,
+        );
+      });
+
       await db.close();
     }
 
@@ -333,7 +357,7 @@ void _runTests(FutureOr<DriftIsolate> Function() spawner, bool terminateIsolate,
       rowInserted.complete();
       // Hold transaction open for expectRowCount() outside the transaction to
       // finish
-      await Future.delayed(const Duration(seconds: 1));
+      await Future<void>.delayed(const Duration(seconds: 1));
       await database.customStatement('delete from tbl');
       await expectRowCount(database, 0);
     });
@@ -404,6 +428,44 @@ void _runTests(FutureOr<DriftIsolate> Function() spawner, bool terminateIsolate,
     expect(database.tableUpdates(TableUpdateQuery.onTable(database.users)),
         emitsInOrder([anything]));
     database.markTablesUpdated({database.users});
+  });
+
+  test('can see parameters in exception', () async {
+    final duplicateCategory =
+        CategoriesCompanion.insert(description: 'has unique constraint');
+    await database.categories.insertOne(duplicateCategory);
+
+    if (serialize) {
+      // We can't serialize exceptions, so expect a string error
+      await expectLater(
+        () => database.categories.insertOne(duplicateCategory),
+        throwsA(
+          isA<DriftRemoteException>().having(
+            (e) => e.remoteCause,
+            'remoteCause',
+            allOf(
+              contains('SqliteException'),
+              contains('parameters: has unique constraint'),
+            ),
+          ),
+        ),
+      );
+    } else {
+      await expectLater(
+        () => database.categories.insertOne(duplicateCategory),
+        throwsA(
+          isA<DriftRemoteException>().having(
+            (e) => e.remoteCause,
+            'remoteCause',
+            isA<SqliteException>()
+                .having((e) => e.causingStatement, 'causingStatement',
+                    'INSERT INTO "categories" ("desc") VALUES (?)')
+                .having((e) => e.parametersToStatement, 'parametersToStatement',
+                    ['has unique constraint']),
+          ),
+        ),
+      );
+    }
   });
 }
 

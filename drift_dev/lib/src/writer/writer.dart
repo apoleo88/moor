@@ -1,9 +1,10 @@
+import 'package:drift/drift.dart';
+import 'package:path/path.dart' show url;
 import 'package:recase/recase.dart';
 import 'package:sqlparser/sqlparser.dart' as sql;
-import 'package:path/path.dart' show url;
 
-import '../analysis/results/results.dart';
 import '../analysis/options.dart';
+import '../analysis/results/results.dart';
 import 'import_manager.dart';
 import 'queries/sql_writer.dart';
 
@@ -228,8 +229,50 @@ abstract class _NodeOrWriter {
     return buffer.toString();
   }
 
-  String sqlCode(sql.AstNode node) {
-    return SqlWriter(writer.options, escapeForDart: false).writeSql(node);
+  String sqlCode(sql.AstNode node, SqlDialect dialect) {
+    return SqlWriter(writer.options, dialect: dialect, escapeForDart: false)
+        .writeSql(node);
+  }
+
+  /// Builds a Dart expression writing the [node] into a Dart string.
+  ///
+  /// If the code for [node] depends on the dialect, the code returned evaluates
+  /// to a `Map<SqlDialect, String>`. Otherwise, the code is a direct string
+  /// literal.
+  ///
+  /// The boolean component in the record describes whether the code will be
+  /// dialect specific.
+  (String, bool) sqlByDialect(sql.AstNode node) {
+    final dialects = writer.options.supportedDialects;
+
+    if (dialects.length == 1) {
+      return (
+        SqlWriter(writer.options, dialect: dialects.single)
+            .writeNodeIntoStringLiteral(node),
+        false
+      );
+    }
+
+    final buffer = StringBuffer();
+    _writeSqlByDialectMap(node, buffer);
+    return (buffer.toString(), true);
+  }
+
+  void _writeSqlByDialectMap(sql.AstNode node, StringBuffer buffer) {
+    buffer.write('{');
+
+    for (final dialect in writer.options.supportedDialects) {
+      buffer
+        ..write(drift('SqlDialect'))
+        ..write(".${dialect.name}: '");
+
+      SqlWriter(writer.options, dialect: dialect, buffer: buffer)
+          .writeSql(node);
+
+      buffer.writeln("',");
+    }
+
+    buffer.write('}');
   }
 }
 
@@ -254,6 +297,10 @@ class Scope extends _Node {
   ///
   /// This can be used to generated methods which must have a unique name-
   int counter = 0;
+
+  /// The set of names already used in this scope. Used by methods like
+  /// [getNonConflictingName] to prevent name collisions.
+  final Set<String> _usedNames = {};
 
   Scope({required Scope? parent, Writer? writer})
       : writer = writer ?? parent!.writer,
@@ -282,6 +329,28 @@ class Scope extends _Node {
     _children.add(child);
     return child;
   }
+
+  /// Reserve a collection of names in this scope. See [getNonConflictingName]
+  /// for more information.
+  void reserveNames(Iterable<String> names) {
+    _usedNames.addAll(names);
+  }
+
+  /// Returns a variation of [name] that does not conflict with any names
+  /// already in use in this [Scope].
+  ///
+  /// If [name] does not conflict with any existing names then it is returned
+  /// unmodified. If a conflict is detected then [name] is repeatedly passed to
+  /// [modify] until the result no longer conflicts. Each result returned from
+  /// this method is recorded in an internal set, so subsequent calls with the
+  /// same name will produce a different, non-conflicting result.
+  String getNonConflictingName(String name, String Function(String) modify) {
+    while (_usedNames.contains(name)) {
+      name = modify(name);
+    }
+    _usedNames.add(name);
+    return name;
+  }
 }
 
 class TextEmitter extends _Node {
@@ -302,16 +371,18 @@ class TextEmitter extends _Node {
 
   void writeDart(AnnotatedDartCode code) => write(dartCode(code));
 
-  void writeSql(sql.AstNode node, {bool escapeForDartString = true}) {
-    SqlWriter(writer.options,
-            escapeForDart: escapeForDartString, buffer: buffer)
-        .writeSql(node);
+  void writeSql(sql.AstNode node,
+      {required SqlDialect dialect, bool escapeForDartString = true}) {
+    SqlWriter(
+      writer.options,
+      dialect: dialect,
+      escapeForDart: escapeForDartString,
+      buffer: buffer,
+    ).writeSql(node);
   }
 
-  void writeSqlAsDartLiteral(sql.AstNode node) {
-    buffer.write("'");
-    writeSql(node);
-    buffer.write("'");
+  void writeSqlByDialectMap(sql.AstNode node) {
+    _writeSqlByDialectMap(node, buffer);
   }
 }
 

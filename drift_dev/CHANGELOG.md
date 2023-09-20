@@ -1,3 +1,69 @@
+## 2.11.2
+
+- Follow `export` directives when looking for table imports.
+
+## 2.11.1
+
+- Reduce the amount of assets read by drift, improving build performance and enabling faster
+  incremental rebuilds.
+- Fix missing import references around `@UseRowClass` with `generateInsertable: true` when
+  modular code generation is enabled.
+- Support references to builtin sqlite3 tables in drift files.
+
+## 2.11.0
+
+- [Nested result columns](https://drift.simonbinder.eu/docs/using-sql/drift_files/#nested-results)
+  in drift files can now refer to any result set (e.g. a table-valued function or a subquery).
+  They were restricted to direct table references before.
+- Add the `dialects` builder option to generate code supporting multiple SQL dialects.
+- Add the `preamble` option for non-shared or modular build setups to mirror the `preamble`
+  option from `source_gen:combining_builder`.
+
+## 2.10.0
+
+- Add the `schema steps` command to generate help in writing step-by-step schema migrations.
+- Report a warning when Dart tables are implicitly added due to `include`. They should be
+  added to a database via `tables` or `views` explicitly.
+
+## 2.9.0
+
+- Add `fatal_warnings` builder option to fail the build when drift reports warnings.
+
+## 2.8.3
+
+- Allow Dart-defined tables to reference imported tables through SQL
+  [#2433](https://github.com/simolus3/drift/issues/2433).
+
+## 2.8.2
+
+- Fix generated to write qualified column references for Dart components in
+  drift files if the same table is available under different names.
+
+## 2.8.1
+
+- Add documentation comments for comments on columns in drift files.
+- Fix modular generation not generating imports correctly with the latest analyzer.
+
+## 2.8.0
+
+- Support named constructors for existing row types in drift files ([#2399](https://github.com/simolus3/drift/issues/2399)).
+- Fix compilation issues with `analyzer: 5.12.0`.
+
+## 2.7.0
+
+- Make `validateDatabaseSchema()` work in migration tests.
+- Fix elements from transitive imports in drift files not being added reliably.
+
+## 2.6.0
+
+- Fix invalid schema verification code being generated for columns with a
+  `clientDefault`.
+- Support drift 2.6.0
+
+## 2.5.2
+
+- Fix generated code for `blob` columns when modular generation is enabled.
+
 ## 2.5.1
 
 - Fix an error resolving multiple table references across different files.

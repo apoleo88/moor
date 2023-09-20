@@ -31,11 +31,11 @@ class JoinedSelectStatement<FirstT extends HasResultSet, FirstD>
   ///
   /// Each table column can be uniquely identified by its (potentially aliased)
   /// table and its name. So a column named `id` in a table called `users` would
-  /// be written as `users.id AS "users.id"`. These columns will NOT be written
-  /// into this map.
+  /// be written as `users.id AS "users.id"`. These columns are also included in
+  /// the map when added through [addColumns], but they have a predicatable name.
   ///
-  /// Other expressions used as columns will be included here. There just named
-  /// in increasing order, so something like `AS c3`.
+  /// More interestingly, other expressions used as columns will be included
+  /// here. They're just named in increasing order, so something like `AS c3`.
   final Map<Expression, String> _columnAliases = {};
 
   /// The tables this select statement reads from
@@ -44,13 +44,59 @@ class JoinedSelectStatement<FirstT extends HasResultSet, FirstD>
   Set<ResultSetImplementation> get watchedTables => _queriedTables().toSet();
 
   @override
-  int get _returnedColumnCount {
-    return _joins.fold(_selectedColumns.length, (prev, join) {
-      if (join.includeInResult ?? _includeJoinedTablesInResult) {
-        return prev + (join.table as ResultSetImplementation).$columns.length;
+  Iterable<(Expression<Object>, String)> get _expandedColumns =>
+      _columnsWithName(null);
+
+  Iterable<(Expression<Object>, String)> _columnsWithName(
+      String? generatingForView) sync* {
+    for (final table in _queriedTables(true)) {
+      for (final column in table.$columns) {
+        yield (
+          column,
+          _nameForTableColumn(column, generatingForView: generatingForView)
+        );
       }
-      return prev;
-    });
+    }
+
+    for (final column in _selectedColumns) {
+      if (column is GeneratedColumn) {
+        yield (
+          column,
+          _nameForTableColumn(column, generatingForView: generatingForView)
+        );
+      } else {
+        yield (column, _columnAliases[column]!);
+      }
+    }
+  }
+
+  @override
+  String? _nameForColumn(Expression expression) {
+    // Custom column added to this join?
+    if (_columnAliases.containsKey(expression)) {
+      return _columnAliases[expression];
+    }
+
+    // From an added table?
+    if (expression is GeneratedColumn) {
+      for (final table in _queriedTables(true)) {
+        if (table.$columns.contains(expression)) {
+          return _nameForTableColumn(expression);
+        }
+      }
+    }
+
+    // Not added to this join
+    return null;
+  }
+
+  String _nameForTableColumn(GeneratedColumn column,
+      {String? generatingForView}) {
+    if (generatingForView == column.tableName) {
+      return column.$name;
+    } else {
+      return '${column.tableName}.${column.$name}';
+    }
   }
 
   /// Lists all tables this query reads from.
@@ -73,42 +119,27 @@ class JoinedSelectStatement<FirstT extends HasResultSet, FirstD>
 
   @override
   void writeStartPart(GenerationContext ctx) {
-    // use all columns across all tables as result column for this query
-    _selectedColumns.insertAll(
-        0, _queriedTables(true).expand((t) => t.$columns).cast<Expression>());
-
     ctx.hasMultipleTables = true;
     ctx.buffer
       ..write(_beginOfSelect(distinct))
       ..write(' ');
 
-    for (var i = 0; i < _selectedColumns.length; i++) {
-      if (i != 0) {
+    var first = true;
+    for (final (column, name) in _columnsWithName(ctx.generatingForView)) {
+      if (!first) {
         ctx.buffer.write(', ');
       }
+      first = false;
 
-      final column = _selectedColumns[i];
-      String chosenAlias;
-      if (column is GeneratedColumn) {
-        if (ctx.generatingForView == column.tableName) {
-          chosenAlias = column.$name;
-        } else {
-          chosenAlias = '${column.tableName}.${column.$name}';
-        }
-      } else {
-        chosenAlias = 'c$i';
-      }
-      _columnAliases[column] = chosenAlias;
-
+      final chosenAliasEscaped = ctx.dialect.escape(name);
       column.writeInto(ctx);
       ctx.buffer
-        ..write(' AS "')
-        ..write(chosenAlias)
-        ..write('"');
+        ..write(' AS ')
+        ..write(chosenAliasEscaped);
     }
 
-    ctx.buffer.write(' FROM ${table.tableWithAlias}');
-    ctx.watchedTables.add(table);
+    ctx.buffer.write(' FROM ');
+    ctx.writeResultSet(table);
 
     if (_joins.isNotEmpty) {
       ctx.writeWhitespace();
@@ -169,7 +200,21 @@ class JoinedSelectStatement<FirstT extends HasResultSet, FirstD>
   ///  - The docs on expressions: https://drift.simonbinder.eu/docs/getting-started/expressions/
   /// {@endtemplate}
   void addColumns(Iterable<Expression> expressions) {
-    _selectedColumns.addAll(expressions);
+    for (final expression in expressions) {
+      // Otherwise, we generate an alias.
+      _columnAliases.putIfAbsent(expression, () {
+        // Only add the column if it hasn't been added yet - it's fine if the
+        // same column is added multiple times through the Dart API, they will
+        // read from the same SQL column internally.
+        _selectedColumns.add(expression);
+
+        if (expression is GeneratedColumn) {
+          return _nameForTableColumn(expression);
+        } else {
+          return 'c${_columnAliases.length}';
+        }
+      });
+    }
   }
 
   /// Adds more joined tables to this [JoinedSelectStatement].
@@ -207,14 +252,14 @@ class JoinedSelectStatement<FirstT extends HasResultSet, FirstD>
 
     return database
         .createStream(fetcher)
-        .asyncMap((rows) => _mapResponse(ctx, rows));
+        .asyncMapPerSubscription((rows) => _mapResponse(rows));
   }
 
   @override
   Future<List<TypedResult>> get() async {
     final ctx = constructQuery();
     final raw = await _getRaw(ctx);
-    return _mapResponse(ctx, raw);
+    return _mapResponse(raw);
   }
 
   Future<List<Map<String, Object?>>> _getRaw(GenerationContext ctx) {
@@ -234,24 +279,34 @@ class JoinedSelectStatement<FirstT extends HasResultSet, FirstD>
     });
   }
 
-  Future<List<TypedResult>> _mapResponse(
-      GenerationContext ctx, List<Map<String, Object?>> rows) {
-    return Future.wait(rows.map((row) async {
-      final readTables = <ResultSetImplementation, dynamic>{};
+  @override
+  Future<TypedResult> _mapRow(Map<String, Object?> row) async {
+    final readTables = <ResultSetImplementation, dynamic>{};
 
-      for (final table in _queriedTables(true)) {
-        final prefix = '${table.aliasedName}.';
-        // if all columns of this table are null, skip the table
-        if (table.$columns.any((c) => row[prefix + c.$name] != null)) {
-          readTables[table] =
-              await table.map(row, tablePrefix: table.aliasedName);
-        }
+    for (final table in _queriedTables(true)) {
+      final prefix = '${table.aliasedName}.';
+      // if all columns of this table are null, skip the table
+      if (table.$columns.any((c) => row[prefix + c.$name] != null)) {
+        readTables[table] =
+            await table.map(row, tablePrefix: table.aliasedName);
       }
+    }
 
-      final driftRow = QueryRow(row, database);
-      return TypedResult(
-          readTables, driftRow, _LazyExpressionMap(_columnAliases, driftRow));
-    }));
+    final driftRow = QueryRow(row, database);
+    return TypedResult(
+      readTables,
+      driftRow,
+      _LazyExpressionMap(
+        {
+          for (final (expr, alias) in _expandedColumns) expr: alias,
+        },
+        driftRow,
+      ),
+    );
+  }
+
+  Future<List<TypedResult>> _mapResponse(List<Map<String, Object?>> rows) {
+    return Future.wait(rows.map(_mapRow));
   }
 
   Never _warnAboutDuplicate(

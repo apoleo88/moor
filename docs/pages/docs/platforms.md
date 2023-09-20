@@ -24,8 +24,8 @@ This table list all supported drift implementations and on which platforms they 
 |----------------|---------------------|-------|
 | `SqfliteQueryExecutor` from `package:drift_sqflite` | Android, iOS | Uses platform channels, Flutter only, no isolate support, doesn't support `flutter test`. Formerly known as `moor_flutter` |
 | `NativeDatabase` from `package:drift/native.dart` | Android, iOS, Windows, Linux, macOS | No further setup is required for Flutter users. For support outside of Flutter, or in `flutter test`, see the [desktop](#desktop) section below. Usage in a [isolate]({{ 'Advanced Features/isolates.md' | pageUrl }}) is recommended. Formerly known as `package:moor/ffi.dart`. |
-| `WebDatabase` from `package:drift/web.dart` | Web | Works with or without Flutter. A bit of [additional setup]({{ 'Other engines/web.md' | pageUrl }}) is required. |
-| `WasmDatabase` from `package:drift/web.dart` | Web | Potentially faster than a `WebDatabase`, but still experimental and not yet production ready. See [this]({{ 'Other engines/web.md#drift-wasm' | pageUrl }}) for details. |
+| `WasmDatabase` from `package:drift/wasm.dart` | Web | Works with or without Flutter. A bit of [additional setup]({{ 'Other engines/web.md' | pageUrl }}) is required. |
+| `WebDatabase` from `package:drift/web.dart` | Web | Deprecated in favor of `WasmDatabase`. |
 
 To support all platforms in a shared codebase, you only need to change how you open your database, all other usages can stay the same.
 [This repository](https://github.com/simolus3/drift/tree/develop/examples/app) gives an example on how to do that with conditional imports.
@@ -56,19 +56,19 @@ It only applies to your full Flutter app though, it can't override the sqlite3 v
 with `flutter test`.
 
 {% block "blocks/alert" title="A note on ffi and Android" %}
-> `package:drift/native.dart` is the recommended drift implementation for new Android apps.
-  However, there are some smaller issues on some devices that you should be aware of:
+`package:drift/native.dart` is the recommended drift implementation for new Android apps.
+However, there are some smaller issues on some devices that you should be aware of:
 
-  - Using `sqlite3_flutter_libs` will include prebuilt binaries for 32-bit `x86` devices which you
-    probably won't need. You can apply a [filter](https://github.com/simolus3/sqlite3.dart/tree/master/sqlite3_flutter_libs#included-platforms)
-    in your `build.gradle` to remove those binaries.
-  - Opening `libsqlite3.so` fails on some Android 6.0.1 devices. This can be fixed by setting
-    `android.bundle.enableUncompressedNativeLibs=false` in your `gradle.properties` file.
-    Note that this will increase the disk usage of your app. See [this issue](https://github.com/simolus3/drift/issues/895#issuecomment-720195005)
-    for details.
-  - Out of memory errors for very complex queries: Since the regular tmp directory isn't available on Android, you need to inform
-    sqlite3 about the right directory to store temporary data. See [this comment](https://github.com/simolus3/drift/issues/876#issuecomment-710013503)
-    for an example on how to do that.
+- Using `sqlite3_flutter_libs` will include prebuilt binaries for 32-bit `x86` devices which you
+  probably won't need. You can apply a [filter](https://github.com/simolus3/sqlite3.dart/tree/master/sqlite3_flutter_libs#included-platforms)
+  in your `build.gradle` to remove those binaries.
+- Opening `libsqlite3.so` fails on some Android 6.0.1 devices. This can be fixed by setting
+  `android.bundle.enableUncompressedNativeLibs=false` in your `gradle.properties` file.
+  Note that this will increase the disk usage of your app. See [this issue](https://github.com/simolus3/drift/issues/895#issuecomment-720195005)
+  for details.
+- Out of memory errors for very complex queries: Since the regular tmp directory isn't available on Android, you need to inform
+  sqlite3 about the right directory to store temporary data. See [this comment](https://github.com/simolus3/drift/issues/876#issuecomment-710013503)
+  for an example on how to do that.
 {% endblock %}
 
 ## Web

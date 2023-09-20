@@ -17,15 +17,26 @@ abstract class DatabaseSchemaEntity {
 /// [sqlite-docs]: https://sqlite.org/lang_createtrigger.html
 /// [sql-tut]: https://www.sqlitetutorial.net/sqlite-trigger/
 class Trigger extends DatabaseSchemaEntity {
-  /// The `CREATE TRIGGER` sql statement that can be used to create this
-  /// trigger.
-  final String createTriggerStmt;
   @override
   final String entityName;
 
+  /// The `CREATE TRIGGER` sql statement that can be used to create this
+  /// trigger.
+  @Deprecated('Use createStatementsByDialect instead')
+  String get createTriggerStmt => createStatementsByDialect.values.first;
+
+  /// The `CREATE TRIGGER` SQL statements used to create this trigger, accessible
+  /// for each dialect enabled when generating code.
+  final Map<SqlDialect, String> createStatementsByDialect;
+
   /// Creates a trigger representation by the [createTriggerStmt] and its
   /// [entityName]. Mainly used by generated code.
-  Trigger(this.createTriggerStmt, this.entityName);
+  Trigger(String createTriggerStmt, String entityName)
+      : this.byDialect(entityName, {SqlDialect.sqlite: createTriggerStmt});
+
+  /// Creates the trigger model from its [entityName] in the schema and all
+  /// [createStatementsByDialect] for the supported dialects.
+  Trigger.byDialect(this.entityName, this.createStatementsByDialect);
 }
 
 /// A sqlite index on columns or expressions.
@@ -40,11 +51,21 @@ class Index extends DatabaseSchemaEntity {
   final String entityName;
 
   /// The `CREATE INDEX` sql statement that can be used to create this index.
-  final String createIndexStmt;
+  @Deprecated('Use createStatementsByDialect instead')
+  String get createIndexStmt => createStatementsByDialect.values.first;
+
+  /// The `CREATE INDEX` SQL statements used to create this index, accessible
+  /// for each dialect enabled when generating code.
+  final Map<SqlDialect, String> createStatementsByDialect;
 
   /// Creates an index model by the [createIndexStmt] and its [entityName].
   /// Mainly used by generated code.
-  Index(this.entityName, this.createIndexStmt);
+  Index(this.entityName, String createIndexStmt)
+      : createStatementsByDialect = {SqlDialect.sqlite: createIndexStmt};
+
+  /// Creates an index model by its [entityName] used in the schema and the
+  /// `CREATE INDEX` statements for each supported dialect.
+  Index.byDialect(this.entityName, this.createStatementsByDialect);
 }
 
 /// An internal schema entity to run an sql statement when the database is
@@ -61,10 +82,19 @@ class Index extends DatabaseSchemaEntity {
 /// drift file.
 class OnCreateQuery extends DatabaseSchemaEntity {
   /// The sql statement that should be run in the default `onCreate` clause.
-  final String sql;
+  @Deprecated('Use sqlByDialect instead')
+  String get sql => sqlByDialect.values.first;
+
+  /// The SQL statement to run, indexed by the dialect used in the database.
+  final Map<SqlDialect, String> sqlByDialect;
 
   /// Create a query that will be run in the default `onCreate` migration.
-  OnCreateQuery(this.sql);
+  OnCreateQuery(String sql) : this.byDialect({SqlDialect.sqlite: sql});
+
+  /// Creates the entity of a query to run in the default `onCreate` migration.
+  ///
+  /// The migrator will lookup a suitable query from the [sqlByDialect] map.
+  OnCreateQuery.byDialect(this.sqlByDialect);
 
   @override
   String get entityName => r'$internal$';
@@ -99,6 +129,10 @@ abstract class ResultSetImplementation<Tbl, Row> extends DatabaseSchemaEntity {
   /// when used in a query.
   ResultSetImplementation<Tbl, Row> createAlias(String alias) =>
       _AliasResultSet(alias, this);
+
+  /// Gets all [$columns] in this table or view, indexed by their (non-escaped)
+  /// name.
+  Map<String, GeneratedColumn> get columnsByName;
 }
 
 class _AliasResultSet<Tbl, Row> extends ResultSetImplementation<Tbl, Row> {
@@ -131,6 +165,10 @@ class _AliasResultSet<Tbl, Row> extends ResultSetImplementation<Tbl, Row> {
 
   @override
   Tbl get asDslTable => _inner.asDslTable;
+
+  @override
+  Map<String, GeneratedColumn<Object>> get columnsByName =>
+      _inner.columnsByName;
 }
 
 /// Extension to generate an alias for a table or a view.
@@ -139,10 +177,13 @@ extension NameWithAlias on ResultSetImplementation<dynamic, dynamic> {
   /// can be used in select statements, as it returns something like "users u"
   /// for a table called users that has been aliased as "u".
   String get tableWithAlias {
+    var dialect = attachedDatabase.executor.dialect;
+    var entityNameEscaped = dialect.escape(entityName);
+    var aliasedNameEscaped = dialect.escape(aliasedName);
     if (aliasedName == entityName) {
-      return '"$entityName"';
+      return entityNameEscaped;
     } else {
-      return '"$entityName" "$aliasedName"';
+      return '$entityNameEscaped $aliasedNameEscaped';
     }
   }
 }

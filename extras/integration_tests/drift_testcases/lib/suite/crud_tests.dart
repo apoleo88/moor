@@ -33,9 +33,16 @@ void crudTests(TestExecutor executor) {
     final db = Database(executor.createConnection());
 
     await expectLater(
-        db.into(db.users).insert(marcell),
-        throwsA(toString(
-            matches(RegExp(r'unique constraint', caseSensitive: false)))));
+      db.into(db.users).insert(marcell),
+      throwsA(
+        toString(anyOf(
+          // sqlite3 and postgres
+          matches(RegExp(r'unique constraint', caseSensitive: false)),
+          // mariadb
+          matches(RegExp(r'duplicate entry', caseSensitive: false)),
+        )),
+      ),
+    );
     await executor.clearDatabaseAndClose(db);
   });
 
@@ -98,15 +105,16 @@ void crudTests(TestExecutor executor) {
     final db = Database(executor.createConnection());
 
     // ignore: invalid_use_of_visible_for_testing_member, invalid_use_of_protected_member
-    if (db.executor.dialect == SqlDialect.postgres) {
-      await db.customStatement(
-          'INSERT INTO friendships (first_user, second_user) VALUES (@1, @2)',
-          <int>[1, 2]);
-    } else {
-      await db.customStatement(
-          'INSERT INTO friendships (first_user, second_user) VALUES (?1, ?2)',
-          <int>[1, 2]);
-    }
+    await db.customStatement(
+        switch (db.executor.dialect) {
+          SqlDialect.postgres =>
+            r'INSERT INTO friendships (first_user, second_user) VALUES ($1, $2)',
+          SqlDialect.mariadb =>
+            r'INSERT INTO friendships (first_user, second_user) VALUES (?, ?)',
+          _ =>
+            r'INSERT INTO friendships (first_user, second_user) VALUES (?1, ?2)',
+        },
+        <int>[1, 2]);
 
     expect(await db.friendsOf(1).get(), isNotEmpty);
     await executor.clearDatabaseAndClose(db);
@@ -119,11 +127,30 @@ void crudTests(TestExecutor executor) {
     tearDown(() => executor.clearDatabaseAndClose(database));
 
     Future<T?> evaluate<T extends Object>(Expression<T> expr) async {
+      late final Expression<T> effectiveExpr;
+      final dialect = database.executor.dialect;
+      if (dialect == SqlDialect.postgres || dialect == SqlDialect.mariadb) {
+        // 'SELECT'ing values that don't come from a table return as String
+        // by default, so we need to explicitly cast it to the expected type
+        // https://www.postgresql.org/docs/current/typeconv-select.html
+        effectiveExpr = expr.cast<T>();
+      } else {
+        effectiveExpr = expr;
+      }
+
       final query = database.selectOnly(database.users)
-        ..addColumns([expr])
+        ..addColumns([effectiveExpr])
         ..limit(1);
       final row = await query.getSingle();
-      return row.read(expr);
+      final columnValue = row.read(effectiveExpr);
+
+      expect(
+        columnValue,
+        TypeMatcher<T?>(),
+        reason:
+            "Type of the input argument does not match the returned column value",
+      );
+      return columnValue;
     }
 
     test('null', () {

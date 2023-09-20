@@ -91,10 +91,20 @@ extension VerifySelf on GeneratedDatabase {
 
     final schemaOfThisDatabase = await collectSchemaInput(virtualTables);
 
-    // Collect the schema how it would be if we just called `createAll` on a
-    // clean database.
-    final referenceDb = _GenerateFromScratch(this, NativeDatabase.memory());
-    final referenceSchema = await referenceDb.collectSchemaInput(virtualTables);
+    // The expectedSchema expando will store the expected schema for this
+    // database when it's opened in a migration test. This allows this method
+    // to be used in migration tests -- otherwise, this would always compare the
+    // runtime schema to the latest schema from generated code.
+    var referenceSchema = expectedSchema[this];
+
+    if (referenceSchema == null) {
+      // Collect the schema how it would be if we just called `createAll` on a
+      // clean database.
+      final referenceDb = _GenerateFromScratch(this, NativeDatabase.memory());
+      referenceSchema = expectedSchema[this] ??
+          await referenceDb.collectSchemaInput(virtualTables);
+      await referenceDb.close();
+    }
 
     verify(referenceSchema, schemaOfThisDatabase, validateDropped);
   }
@@ -184,7 +194,7 @@ class InitializedSchema {
   ///
   ///   // Insert some data from the view of the old database on an independent
   ///   // connection!
-  ///   final oldDb = v1.DatabaseAtV1.connect(schema.newConnection());
+  ///   final oldDb = v1.DatabaseAtV1(schema.newConnection());
   ///   await oldDb.into(oldDb.users).insert(v1.UsersCompanion(id: Value(1)));
   ///   await oldDb.close();
   ///
@@ -194,7 +204,7 @@ class InitializedSchema {
   ///   await dbForMigration.close();
   ///
   ///   // Make sure the user is still here with a new database at v2
-  ///   final checkDb = v2.DatabaseAtV2.connect(schema.newConnection());
+  ///   final checkDb = v2.DatabaseAtV2(schema.newConnection());
   ///   final user = await checkDb.select(checkDb.users).getSingle();
   ///   expect(user.id, 1);
   ///   expect(user.name, 'default name from migration');

@@ -89,6 +89,7 @@ CREATE TABLE b (
 
          CREATE TABLE foo (
            fruitIndex ENUM(Fruits) NOT NULL,
+           fruitWithGenericIndex ENUM(FruitsWithGeneric) NOT NULL,
            fruitName ENUMNAME(Fruits) NOT NULL,
            anotherIndex ENUM(DoesNotExist) NOT NULL,
            anotherName ENUMNAME(DoesNotExist) NOT NULL
@@ -96,6 +97,10 @@ CREATE TABLE b (
       ''',
       'a|lib/enum.dart': '''
         enum Fruits {
+          apple, orange, banana
+        }
+
+        enum FruitsWithGeneric<T> {
           apple, orange, banana
         }
       ''',
@@ -118,6 +123,22 @@ CREATE TABLE b (
           .having((e) => e.dartType.getDisplayString(withNullability: true),
               'dartType', 'Fruits'),
     );
+
+    final withGenericIndexColumn = table.columns
+        .singleWhere((c) => c.nameInSql == 'fruitWithGenericIndex');
+    expect(withGenericIndexColumn.sqlType, DriftSqlType.int);
+    expect(
+      withGenericIndexColumn.typeConverter,
+      isA<AppliedTypeConverter>()
+          .having(
+            (e) => e.expression.toString(),
+            'expression',
+            contains('EnumIndexConverter<FruitsWithGeneric>'),
+          )
+          .having(
+              (e) => e.dartType.element!.name, 'dartType', 'FruitsWithGeneric'),
+    );
+
     final nameColumn =
         table.columns.singleWhere((c) => c.nameInSql == 'fruitName');
 
@@ -219,5 +240,27 @@ CREATE TABLE waybills (
         table.columnBySqlName['parent'],
         isA<DriftColumn>().having(
             (e) => e.overriddenJsonName, 'overriddenJsonName', 'parentDoc'));
+  });
+
+  test('recognizes documentation comments', () async {
+    final state = TestBackend.inTest({
+      'a|lib/a.drift': '''
+CREATE TABLE IF NOT EXISTS currencies (
+  -- The name of this currency
+  name TEXT NOT NULL PRIMARY KEY,
+  symbol TEXT NOT NULL
+);
+''',
+    });
+
+    final file = await state.analyze('package:a/a.drift');
+    state.expectNoErrors();
+
+    final table = file.analyzedElements.single as DriftTable;
+    expect(
+      table.columnBySqlName['name'],
+      isA<DriftColumn>().having((e) => e.documentationComment,
+          'documentationComment', '/// The name of this currency'),
+    );
   });
 }

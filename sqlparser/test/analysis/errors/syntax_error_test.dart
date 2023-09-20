@@ -80,6 +80,17 @@ void main() {
           .expectError('DEFAULT VALUES', type: AnalysisErrorType.synctactic);
     });
 
+    test('WITH clauses', () {
+      // https://sqlite.org/lang_with.html#limitations_and_caveats
+      engine.analyze('WITH x AS (SELECT 1) SELECT 2').expectNoError();
+
+      engine.analyze('''
+CREATE TRIGGER tgr AFTER INSERT ON demo BEGIN
+  WITH x AS (SELECT 1) SELECT 2;
+END;
+''').expectError('WITH', type: AnalysisErrorType.synctactic);
+    });
+
     group('aliased source tables', () {
       test('insert', () {
         engine.analyze('INSERT INTO demo AS d VALUES (?, ?)').expectNoError();
@@ -106,6 +117,14 @@ void main() {
                 'DELETE FROM demo d;'
                 'END;')
             .expectError('demo d', type: AnalysisErrorType.synctactic);
+      });
+
+      test('allowed in subquery', () {
+        engine.analyze('''
+          CREATE TRIGGER tgr AFTER DELETE ON demo BEGIN
+            INSERT INTO demo (content) SELECT content FROM demo AS ok;
+          END;
+        ''').expectNoError();
       });
     });
   });

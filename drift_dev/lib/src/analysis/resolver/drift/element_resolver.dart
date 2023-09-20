@@ -32,7 +32,7 @@ abstract class DriftElementResolver<T extends DiscoveredElement>
         file.ownUri,
         code,
         file.discovery!.importDependencies
-            .map((e) => e.toString())
+            .map((e) => e.uri.toString())
             .where((e) => e.endsWith('.dart')),
       );
     } on CannotReadExpressionException catch (e) {
@@ -62,24 +62,14 @@ abstract class DriftElementResolver<T extends DiscoveredElement>
 
   Future<Element?> _findInDart(String identifier) async {
     final dartImports = file.discovery!.importDependencies
+        .map((e) => e.uri)
         .where((importUri) => importUri.path.endsWith('.dart'))
         // Also add `dart:core` as a default import so that types like `Record`
         // are available.
         .followedBy([AnnotatedDartCode.dartCore]);
 
-    for (final import in dartImports) {
-      LibraryElement library;
-      try {
-        library = await resolver.driver.backend.readDart(import);
-      } on NotALibraryException {
-        continue;
-      }
-
-      final foundElement = library.exportNamespace.get(identifier);
-      if (foundElement != null) return foundElement;
-    }
-
-    return null;
+    return await resolver.driver.backend
+        .resolveTopLevelElement(file.ownUri, identifier, dartImports);
   }
 
   /// Resolves [identifier] to a Dart element declaring a type, or reports an
@@ -153,8 +143,8 @@ abstract class DriftElementResolver<T extends DiscoveredElement>
       return null;
     } else {
       final knownTypes = await resolver.driver.loadKnownTypes();
-      return validateExistingClass(
-          columns, foundDartClass, '', false, this, knownTypes);
+      return validateExistingClass(columns, foundDartClass,
+          source.constructorName ?? '', false, this, knownTypes);
     }
   }
 
@@ -167,21 +157,40 @@ abstract class DriftElementResolver<T extends DiscoveredElement>
   }
 
   Future<List<DriftElement>> resolveTableReferences(AstNode stmt) async {
-    final references =
-        resolver.driver.newSqlEngine().findReferencedSchemaTables(stmt);
+    final engine = resolver.driver.newSqlEngine();
+    final references = engine.findReferencedSchemaTables(stmt);
     final found = <DriftElement>[];
+    final missingNames = <String, ResolveReferencedElementResult>{};
 
     for (final table in references) {
+      // If this is a reference to a table the empty engine already knows, it
+      // must be a table builtin to sqlite3, not a drift reference.
+      if (engine.knownResultSets
+          .any((e) => e.name.toLowerCase() == table.toLowerCase())) {
+        continue;
+      }
+
       final result = await resolver.resolveReference(discovered.ownId, table);
 
       if (result is ResolvedReferenceFound) {
         found.add(result.element);
       } else {
-        final referenceNode = stmt.allDescendants
-            .firstWhere((e) => e is TableReference && e.tableName == table);
+        missingNames[table.toLowerCase()] = result;
+      }
+    }
 
-        reportErrorForUnresolvedReference(result,
-            (msg) => DriftAnalysisError.inDriftFile(referenceNode, msg));
+    if (missingNames.isNotEmpty) {
+      // Ok, there are unresolved table references
+      for (final reference in stmt.allDescendants.whereType<TableReference>()) {
+        if (reference.resolved == null) {
+          final unresolvedBecause =
+              missingNames[reference.tableName.toLowerCase()];
+
+          if (unresolvedBecause != null) {
+            reportErrorForUnresolvedReference(unresolvedBecause,
+                (msg) => DriftAnalysisError.inDriftFile(reference, msg));
+          }
+        }
       }
     }
 

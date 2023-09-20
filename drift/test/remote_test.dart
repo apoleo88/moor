@@ -17,7 +17,7 @@ void main() {
   preferLocalSqlite3();
 
   test('closes channel in shutdown', () async {
-    final controller = StreamChannelController();
+    final controller = StreamChannelController<Object?>();
     final server =
         DriftServer(testInMemoryDatabase(), allowRemoteShutdown: true);
     server.serve(controller.foreign);
@@ -26,7 +26,7 @@ void main() {
   });
 
   test('can shutdown server on close', () async {
-    final controller = StreamChannelController();
+    final controller = StreamChannelController<Object?>();
     final server =
         DriftServer(testInMemoryDatabase(), allowRemoteShutdown: true);
     server.serve(controller.foreign);
@@ -47,7 +47,7 @@ void main() {
     () async {
       final server =
           DriftServer(testInMemoryDatabase(), allowRemoteShutdown: true);
-      final controller = StreamChannelController();
+      final controller = StreamChannelController<Object?>();
       server.serve(controller.foreign, serialize: false);
 
       final client = await connectToRemoteAndInitialize(
@@ -116,7 +116,7 @@ void main() {
     final server = DriftServer(DatabaseConnection(executor));
     addTearDown(server.shutdown);
 
-    final channelController = StreamChannelController();
+    final channelController = StreamChannelController<Object?>();
     server.serve(channelController.foreign.changeStream(_checkStreamOfSimple),
         serialize: true);
 
@@ -140,11 +140,20 @@ void main() {
       Uint8List(12),
     ]));
 
+    when(executor.runInsert(any, any)).thenAnswer(
+        (realInvocation) => Future.error(UnimplementedError('error!')));
+    await expectLater(
+      db.categories
+          .insertOne(CategoriesCompanion.insert(description: 'description')),
+      throwsA(isA<DriftRemoteException>().having(
+          (e) => e.remoteCause, 'remoteCause', 'UnimplementedError: error!')),
+    );
+
     await db.close();
   });
 
   test('nested transactions', () async {
-    final controller = StreamChannelController();
+    final controller = StreamChannelController<Object?>();
     final executor = MockExecutor();
     final outerTransaction = executor.transactions;
     // avoid this object being created implicitly in the beginTransaction() when
@@ -198,7 +207,7 @@ void main() {
     final executor = MockExecutor();
     when(executor.dialect).thenReturn(SqlDialect.postgres);
 
-    final controller = StreamChannelController();
+    final controller = StreamChannelController<Object?>();
     final server = DriftServer(DatabaseConnection(executor))
       ..serve(controller.foreign);
 

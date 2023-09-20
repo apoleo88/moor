@@ -5,23 +5,7 @@ import 'package:sqlparser/sqlparser.dart' hide ResultColumn;
 import 'package:test/test.dart';
 
 import '../../test_utils.dart';
-import 'existing_row_classes_test.dart';
 import 'utils.dart';
-
-Future<SqlQuery> _handle(String sql) async {
-  return analyzeSingleQueryInDriftFile('''
-CREATE TABLE foo (
-  id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-  name VARCHAR
-);
-CREATE TABLE bar (
-  id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-  foo INTEGER NOT NULL REFERENCES foo(id)
-);
-
-a: $sql
-''');
-}
 
 void main() {
   test('respects explicit type arguments', () async {
@@ -44,6 +28,20 @@ bar(?1 AS TEXT, :foo AS BOOLEAN): SELECT ?, :foo;
         [DriftSqlType.string, DriftSqlType.bool]);
   });
 
+  test('can read from builtin tables', () async {
+    final state = TestBackend.inTest({
+      'a|lib/main.drift': '''
+testQuery: SELECT * FROM sqlite_schema;
+      ''',
+    });
+
+    final file = await state.analyze('package:a/main.drift');
+    state.expectNoErrors();
+
+    final query = file.fileAnalysis!.resolvedQueries.values.single;
+    expect(query, const TypeMatcher<SqlSelectQuery>());
+  });
+
   test('reads REQUIRED syntax', () async {
     final state = TestBackend.inTest({
       'foo|lib/main.drift': '''
@@ -63,27 +61,6 @@ bar(REQUIRED ?1 AS TEXT OR NULL, REQUIRED :foo AS BOOLEAN): SELECT ?, :foo;
             .having((e) => e.isRequired, 'isRequired', isTrue)),
       ),
     );
-  });
-
-  group('detects whether multiple tables are referenced', () {
-    test('when only selecting from one table', () async {
-      final query = await _handle('SELECT * FROM foo;');
-      expect(query.hasMultipleTables, isFalse);
-    });
-
-    test('when selecting from multiple tables', () async {
-      final query =
-          await _handle('SELECT * FROM bar JOIN foo ON bar.foo = foo.id;');
-
-      expect(query.hasMultipleTables, isTrue);
-    });
-
-    test('when updating a single table', () async {
-      final query = await _handle('INSERT INTO bar (foo) SELECT id FROM foo;');
-
-      expect(query.hasMultipleTables, isTrue);
-      expect((query as UpdatingQuery).updates, hasLength(1));
-    });
   });
 
   test('infers result set for views', () async {
@@ -127,10 +104,52 @@ query: SELECT foo.**, bar.** FROM my_view foo, my_view bar;
     final query = file.fileAnalysis!.resolvedQueries.values.single;
 
     expect(query.resultSet!.nestedResults, hasLength(2));
+
+    final isFromView = isExistingRowType(
+      type: 'MyViewData',
+      singleValue: isA<MatchingDriftTable>()
+          .having((e) => e.table.schemaName, 'table.schemaName', 'my_view'),
+    );
+
     expect(
-        query.resultSet!.nestedResults,
-        everyElement(isA<NestedResultTable>()
-            .having((e) => e.table.schemaName, 'table.schemName', 'my_view')));
+      query.resultSet!.mappingToRowClass('', const DriftOptions.defaults()),
+      isExistingRowType(
+        named: {
+          'foo': structedFromNested(isFromView),
+          'bar': structedFromNested(isFromView),
+        },
+      ),
+    );
+  });
+
+  test('infers nested result sets for custom result sets', () async {
+    final state = TestBackend.inTest({
+      'foo|lib/main.drift': r'''
+query: SELECT 1 AS a, b.** FROM (SELECT 2 AS b, 3 AS c) AS b;
+      ''',
+    });
+
+    final file = await state.analyze('package:foo/main.drift');
+    state.expectNoErrors();
+
+    final query = file.fileAnalysis!.resolvedQueries.values.single;
+
+    expect(
+      query.resultSet!.mappingToRowClass('Row', const DriftOptions.defaults()),
+      isExistingRowType(
+        type: 'Row',
+        named: {
+          'a': scalarColumn('a'),
+          'b': structedFromNested(isExistingRowType(
+            type: 'QueryNestedColumn0',
+            named: {
+              'b': scalarColumn('b'),
+              'c': scalarColumn('c'),
+            },
+          )),
+        },
+      ),
+    );
   });
 
   for (final dateTimeAsText in [false, true]) {
@@ -215,7 +234,7 @@ FROM routes
     expect(
       resultSet.nestedResults
           .cast<NestedResultTable>()
-          .map((e) => e.table.schemaName),
+          .map((e) => e.innerResultSet.matchingTable!.table.schemaName),
       ['points', 'points'],
     );
   });

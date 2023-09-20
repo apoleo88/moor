@@ -16,6 +16,7 @@ import 'package:drift_dev/src/analysis/driver/error.dart';
 import 'package:drift_dev/src/analysis/driver/state.dart';
 import 'package:drift_dev/src/analysis/results/results.dart';
 import 'package:drift_dev/src/analysis/options.dart';
+import 'package:drift_dev/src/writer/import_manager.dart';
 import 'package:logging/logging.dart';
 import 'package:package_config/package_config.dart';
 import 'package:path/path.dart' as p;
@@ -44,7 +45,7 @@ class TestBackend extends DriftBackend {
           for (final entry in sourceContents.entries)
             AssetId.parse(entry.key).uri.toString(): entry.value,
         } {
-    driver = DriftAnalysisDriver(this, options);
+    driver = DriftAnalysisDriver(this, options, isTesting: true);
   }
 
   factory TestBackend.inTest(
@@ -184,6 +185,39 @@ class TestBackend extends DriftBackend {
   }
 
   @override
+  Future<Element?> resolveTopLevelElement(
+      Uri context, String reference, Iterable<Uri> imports) async {
+    final fileContents = StringBuffer();
+    for (final import in imports) {
+      fileContents.writeln("import '$import';");
+    }
+
+    final path = '${_pathFor(context)}.imports.dart';
+
+    await _setupDartAnalyzer();
+
+    final resourceProvider = _resourceProvider!;
+    final analysisContext = _dartContext!;
+
+    resourceProvider.setOverlay(path,
+        content: fileContents.toString(), modificationStamp: 1);
+
+    try {
+      final result =
+          await analysisContext.currentSession.getResolvedLibrary(path);
+
+      if (result is ResolvedLibraryResult) {
+        final lookup = result.element.scope.lookup(reference);
+        return lookup.getter;
+      }
+    } finally {
+      resourceProvider.removeOverlay(path);
+    }
+
+    return null;
+  }
+
+  @override
   Future<LibraryElement> readDart(Uri uri) async {
     await ensureHasDartAnalyzer();
     final result =
@@ -207,8 +241,22 @@ class TestBackend extends DriftBackend {
 
   Future<void> dispose() async {}
 
+  Future<FileState> discoverLocalElements(String uriString) {
+    return driver.findLocalElements(Uri.parse(uriString));
+  }
+
   Future<FileState> analyze(String uriString) {
     return driver.fullyAnalyze(Uri.parse(uriString));
+  }
+}
+
+class TestImportManager extends ImportManager {
+  final Map<Uri, String> importAliases = {};
+
+  @override
+  String? prefixFor(Uri definitionUri, String elementName) {
+    return importAliases.putIfAbsent(
+        definitionUri, () => 'i${importAliases.length}');
   }
 }
 

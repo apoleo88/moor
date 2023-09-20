@@ -4,6 +4,7 @@ const _intType = ResolvedType(type: BasicType.int);
 const _realType = ResolvedType(type: BasicType.real);
 const _textType = ResolvedType(type: BasicType.text);
 
+const _expectCondition = ExactTypeExpectation.laxly(ResolvedType.bool());
 const _expectInt = ExactTypeExpectation.laxly(_intType);
 const _expectNum = RoughTypeExpectation.numeric();
 const _expectString = ExactTypeExpectation.laxly(_textType);
@@ -49,6 +50,13 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
           currentColumnIndex += child.scope.expansionOfStarColumn?.length ?? 1;
         } else if (child is NestedQueryColumn) {
           visit(child.select, arg);
+        } else if (child is NestedStarResultColumn) {
+          final columns = child.resultSet?.resolvedColumns;
+          if (columns != null) {
+            for (final column in columns) {
+              _handleColumn(column, child);
+            }
+          }
         }
       } else {
         visit(child, arg);
@@ -127,6 +135,12 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
     visit(e.column, const NoTypeExpectation());
     _lazyCopy(e.expression, e.column);
     visit(e.expression, const NoTypeExpectation());
+  }
+
+  @override
+  void visitGroupBy(GroupBy e, TypeExpectation arg) {
+    visitList(e.by, const NoTypeExpectation());
+    visitNullable(e.having, _expectCondition);
   }
 
   @override
@@ -511,6 +525,17 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
       session._addRelation(NullableIfSomeOtherIs(e, params));
     }
 
+    void checkArgumentCount(int expectedArgs) {
+      if (params.length != expectedArgs) {
+        session.context.reportError(AnalysisError(
+          type: AnalysisErrorType.invalidAmountOfParameters,
+          message:
+              '${e.name} expects $expectedArgs arguments, got ${params.length}.',
+          relevantNode: e.parameters,
+        ));
+      }
+    }
+
     final lowercaseName = e.name.toLowerCase();
     switch (lowercaseName) {
       case 'round':
@@ -553,6 +578,7 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
       case 'sqlite_compileoption_set':
       case 'sqlite_version':
       case 'typeof':
+      case 'timediff':
         return _textType;
       case 'datetime':
         return _textType.copyWith(hint: const IsDateTime(), nullable: true);
@@ -566,6 +592,7 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
       case 'rank':
       case 'dense_rank':
       case 'ntile':
+      case 'octet_length':
         return _intType;
       case 'instr':
       case 'length':
@@ -575,6 +602,8 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
       case 'randomblob':
       case 'zeroblob':
         return const ResolvedType(type: BasicType.blob);
+      case 'unhex':
+        return const ResolvedType(type: BasicType.blob, nullable: true);
       case 'total':
       case 'avg':
       case 'percent_rank':
@@ -585,6 +614,18 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
       case 'likely':
       case 'unlikely':
         session._addRelation(CopyTypeFrom(e, params.first));
+        return null;
+      case 'iif':
+        checkArgumentCount(3);
+
+        if (params.length == 3) {
+          // IIF(a, b, c) is essentially CASE WHEN a THEN b ELSE c END
+          final cases = [params[1], params[2]];
+          session
+            .._addRelation(CopyEncapsulating(e, cases))
+            .._addRelation(HaveSameType(cases));
+        }
+
         return null;
       case 'coalesce':
       case 'ifnull':
@@ -635,11 +676,46 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
     final visited = <AstNode>{};
     final name = e.name.toLowerCase();
 
-    if (name == 'nth_value' && params.length >= 2 && params[1] is Expression) {
-      // the second argument of nth_value is always an integer
-      final secondParam = params[1] as Expression;
-      visit(secondParam, _expectInt);
-      visited.add(secondParam);
+    switch (name) {
+      case 'iif':
+        if (params.isNotEmpty) {
+          final condition = params[0];
+          if (condition is Expression) {
+            visited.add(condition);
+            visit(condition, _expectCondition);
+          }
+        }
+        break;
+      case 'nth_value':
+        if (params.length >= 2 && params[1] is Expression) {
+          // the second argument of nth_value is always an integer
+          final secondParam = params[1] as Expression;
+          visit(secondParam, _expectInt);
+          visited.add(secondParam);
+        }
+        break;
+      case 'unhex':
+        for (var i = 0; i < min(2, params.length); i++) {
+          final param = params[i];
+          if (param is Expression) {
+            visit(param, _expectString);
+            visited.add(param);
+          }
+        }
+      case 'timediff':
+        for (var i = 0; i < min(2, params.length); i++) {
+          final param = params[i];
+          if (param is Expression) {
+            visit(
+                param,
+                const ExactTypeExpectation(ResolvedType(
+                  type: BasicType.text,
+                  hint: IsDateTime(),
+                )));
+            visited.add(param);
+          }
+        }
+        break;
     }
 
     final extensionHandler =
@@ -696,16 +772,17 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
     } else if (column is DelegatedColumn && column.innerColumn != null) {
       _handleColumn(column.innerColumn);
 
+      var makeNullable = false;
+
       if (column is AvailableColumn) {
         // The nullability depends on whether the column was introduced in an
         // outer join.
         final model = context != null ? JoinModel.of(context) : null;
-        final isNullable =
-            model == null || model.availableColumnIsNullable(column);
-        _lazyCopy(column, column.innerColumn, makeNullable: isNullable);
-      } else {
-        _lazyCopy(column, column.innerColumn);
+
+        makeNullable = model != null && model.availableColumnIsNullable(column);
       }
+
+      _lazyCopy(column, column.innerColumn, makeNullable: makeNullable);
     }
   }
 
@@ -733,7 +810,7 @@ class TypeResolver extends RecursiveVisitor<TypeExpectation, void> {
       // assume that a where statement is a boolean expression. Sqlite
       // internally casts (https://www.sqlite.org/lang_expr.html#booleanexpr),
       // so be lax
-      visit(e.where!, const ExactTypeExpectation.laxly(ResolvedType.bool()));
+      visit(e.where!, _expectCondition);
     }
   }
 

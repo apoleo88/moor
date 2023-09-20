@@ -25,9 +25,12 @@ class DartAccessorResolver
 
     final rawTablesOrNull = annotation.getField('tables')?.toListValue();
     if (rawTablesOrNull == null) {
+      final annotationName =
+          annotation.type?.nameIfInterfaceType ?? 'DriftDatabase';
+
       reportError(DriftAnalysisError.forDartElement(
         element,
-        'Could not read tables from @DriftDatabase annotation! \n'
+        'Could not read tables from @$annotationName annotation! \n'
         'Please make sure that all table classes exist.',
       ));
     }
@@ -91,9 +94,9 @@ class DartAccessorResolver
       } else {
         includes.add(import);
 
-        final resolved = await resolver.driver.prepareFileForAnalysis(
-            discovered.ownId.libraryUri.resolveUri(import));
-        if (resolved.discovery?.isValidImport != true) {
+        final resolved = await resolver.driver
+            .findLocalElements(discovered.ownId.libraryUri.resolveUri(import));
+        if (!resolved.isValidImport) {
           reportError(
             DriftAnalysisError.forDartElement(
                 element, '`$value` could not be imported'),
@@ -153,7 +156,7 @@ class DartAccessorResolver
 
       final dbImpl = dbType?.typeArguments.single ??
           element.library.typeProvider.dynamicType;
-      if (dbImpl.isDynamic) {
+      if (dbImpl is DynamicType) {
         reportError(DriftAnalysisError.forDartElement(
           element,
           'This class must inherit from DatabaseAccessor<T>, where T is an '

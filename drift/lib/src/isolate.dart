@@ -18,7 +18,7 @@ StreamChannel connectToServer(SendPort serverConnectPort, bool serialize) {
   serverConnectPort.send([receive.sendPort, serialize]);
 
   final controller =
-      StreamChannelController(allowForeignErrors: false, sync: true);
+      StreamChannelController<Object?>(allowForeignErrors: false, sync: true);
   receive.listen((message) {
     if (message is SendPort) {
       controller.local.stream.listen(message.send, onDone: () {
@@ -55,7 +55,11 @@ class RunningDriftServer {
     this.killIsolateWhenDone = true,
     bool closeConnectionAfterShutdown = true,
     this.onlyAcceptSingleConnection = false,
-  }) : server = DriftServer(connection, allowRemoteShutdown: true) {
+  }) : server = DriftServer(
+          connection,
+          allowRemoteShutdown: true,
+          closeConnectionAfterShutdown: closeConnectionAfterShutdown,
+        ) {
     final subscription = connectPort.listen((message) {
       if (message is List && message.length == 2) {
         if (onlyAcceptSingleConnection) {
@@ -68,8 +72,8 @@ class RunningDriftServer {
             ReceivePort('drift channel #${_counter++}');
         sendPort.send(receiveForConnection.sendPort);
 
-        final controller =
-            StreamChannelController(allowForeignErrors: false, sync: true);
+        final controller = StreamChannelController<Object?>(
+            allowForeignErrors: false, sync: true);
         receiveForConnection.listen((message) {
           if (message == disconnectMessage) {
             // Client closed the connection

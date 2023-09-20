@@ -274,16 +274,16 @@ Future<void> trackWord(String word) {
 ```
 
 {% block "blocks/alert" title="Unique constraints and conflict targets" %}
-> Both `insertOnConflictUpdate` and `onConflict: DoUpdate` use an `DO UPDATE`
-  upsert in sql. This requires us to provide a so-called "conflict target", a
-  set of columns to check for uniqueness violations. By default, drift will use
-  the table's primary key as conflict target. That works in most cases, but if
-  you have custom `UNIQUE` constraints on some columns, you'll need to use
-  the `target` parameter on `DoUpdate` in Dart to include those columns.
+Both `insertOnConflictUpdate` and `onConflict: DoUpdate` use an `DO UPDATE`
+upsert in sql. This requires us to provide a so-called "conflict target", a
+set of columns to check for uniqueness violations. By default, drift will use
+the table's primary key as conflict target. That works in most cases, but if
+you have custom `UNIQUE` constraints on some columns, you'll need to use
+the `target` parameter on `DoUpdate` in Dart to include those columns.
 {% endblock %}
 
 Note that this requires a fairly recent sqlite3 version (3.24.0) that might not
-be available on older Android devices when using `moor_flutter`. `NativeDatabases`
+be available on older Android devices when using `drift_sqflite`. `NativeDatabases`
 and `sqlite3_flutter_libs` includes the latest sqlite on Android, so consider using
 it if you want to support upserts.
 

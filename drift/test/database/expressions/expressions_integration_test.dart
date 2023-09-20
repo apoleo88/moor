@@ -123,6 +123,10 @@ void main() {
         const literal = Constant('  hello world    ');
         expect(eval(literal.trimRight()), completion('  hello world'));
       });
+
+      test('substring', () {
+        expect(eval(Constant('hello world').substr(7)), completion('world'));
+      });
     });
 
     test('coalesce', () async {
@@ -200,6 +204,27 @@ void main() {
           eval(Variable.withBigInt(BigInt.two)
               .bitwiseAnd(Variable(BigInt.from(10)))),
           completion(BigInt.two));
+    });
+
+    group('isIn and isNotIn', () {
+      test('non-empty', () async {
+        expect(await eval(Variable.withInt(3).isIn([2, 4])), isFalse);
+        expect(await eval(Variable.withInt(3).isIn([3, 5])), isTrue);
+
+        expect(await eval(Variable.withInt(3).isNotIn([2, 4])), isTrue);
+        expect(await eval(Variable.withInt(3).isNotIn([3, 5])), isFalse);
+
+        expect(await eval(const Constant<int>(null).isIn([2, 4])), isNull);
+        expect(await eval(const Constant<int>(null).isNotIn([2, 4])), isNull);
+      });
+
+      test('empty', () async {
+        expect(await eval(Variable.withInt(3).isIn([])), isFalse);
+        expect(await eval(Variable.withInt(3).isNotIn([])), isTrue);
+
+        expect(await eval(const Constant<int>(null).isIn([])), isFalse);
+        expect(await eval(const Constant<int>(null).isNotIn([])), isTrue);
+      });
     });
   });
 }

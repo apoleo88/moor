@@ -672,15 +672,18 @@ class NotesCompanion extends UpdateCompanion<Note> {
   final Value<String> title;
   final Value<String> content;
   final Value<String> searchTerms;
+  final Value<int> rowid;
   const NotesCompanion({
     this.title = const Value.absent(),
     this.content = const Value.absent(),
     this.searchTerms = const Value.absent(),
+    this.rowid = const Value.absent(),
   });
   NotesCompanion.insert({
     required String title,
     required String content,
     required String searchTerms,
+    this.rowid = const Value.absent(),
   })  : title = Value(title),
         content = Value(content),
         searchTerms = Value(searchTerms);
@@ -688,22 +691,26 @@ class NotesCompanion extends UpdateCompanion<Note> {
     Expression<String>? title,
     Expression<String>? content,
     Expression<String>? searchTerms,
+    Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (title != null) 'title': title,
       if (content != null) 'content': content,
       if (searchTerms != null) 'search_terms': searchTerms,
+      if (rowid != null) 'rowid': rowid,
     });
   }
 
   NotesCompanion copyWith(
       {Value<String>? title,
       Value<String>? content,
-      Value<String>? searchTerms}) {
+      Value<String>? searchTerms,
+      Value<int>? rowid}) {
     return NotesCompanion(
       title: title ?? this.title,
       content: content ?? this.content,
       searchTerms: searchTerms ?? this.searchTerms,
+      rowid: rowid ?? this.rowid,
     );
   }
 
@@ -719,6 +726,9 @@ class NotesCompanion extends UpdateCompanion<Note> {
     if (searchTerms.present) {
       map['search_terms'] = Variable<String>(searchTerms.value);
     }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
     return map;
   }
 
@@ -727,7 +737,8 @@ class NotesCompanion extends UpdateCompanion<Note> {
     return (StringBuffer('NotesCompanion(')
           ..write('title: $title, ')
           ..write('content: $content, ')
-          ..write('searchTerms: $searchTerms')
+          ..write('searchTerms: $searchTerms, ')
+          ..write('rowid: $rowid')
           ..write(')'))
         .toString();
   }
@@ -820,8 +831,10 @@ class GroupCount extends ViewInfo<GroupCount, GroupCountData>
   @override
   String get entityName => 'group_count';
   @override
-  String get createViewStmt =>
-      'CREATE VIEW group_count AS SELECT users.*, (SELECT COUNT(*) FROM "groups" WHERE owner = users.id) AS group_count FROM users';
+  Map<SqlDialect, String> get createViewStatements => {
+        SqlDialect.sqlite:
+            'CREATE VIEW group_count AS SELECT users.*, (SELECT COUNT(*) FROM "groups" WHERE owner = users.id) AS group_count FROM users',
+      };
   @override
   GroupCount get asDslTable => this;
   @override
@@ -863,7 +876,7 @@ class GroupCount extends ViewInfo<GroupCount, GroupCountData>
   @override
   Query? get query => null;
   @override
-  Set<String> get readTables => const {'groups', 'users'};
+  Set<String> get readTables => const {'users', 'groups'};
 }
 
 abstract class _$Database extends GeneratedDatabase {
@@ -872,12 +885,14 @@ abstract class _$Database extends GeneratedDatabase {
   late final Groups groups = Groups(this);
   late final Notes notes = Notes(this);
   late final GroupCount groupCount = GroupCount(this);
+  late final Index userName =
+      Index('user_name', 'CREATE INDEX user_name ON users (name)');
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
   @override
   List<DatabaseSchemaEntity> get allSchemaEntities =>
-      [users, groups, notes, groupCount];
+      [users, groups, notes, groupCount, userName];
   @override
   DriftDatabaseOptions get options =>
       const DriftDatabaseOptions(storeDateTimeAsText: true);

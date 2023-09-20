@@ -13,26 +13,46 @@ import 'package:path_provider/path_provider.dart';
 
 part 'isolates.g.dart';
 
+QueryExecutor _openConnection() {
+  return NativeDatabase.memory();
+}
+
 class SomeTable extends Table {
   IntColumn get id => integer().autoIncrement()();
   TextColumn get content => text()();
 }
 
-// #docregion isolate
+// Copying the definitions here because we can't import Flutter in documentation
+// snippets.
+class RootIsolateToken {
+  static final instance = RootIsolateToken();
+}
+
+class BackgroundIsolateBinaryMessenger {
+  static void ensureInitialized(RootIsolateToken token) {}
+}
+
+// #docregion isolate, database-definition
 
 @DriftDatabase(tables: [SomeTable] /* ... */)
 class MyDatabase extends _$MyDatabase {
-  MyDatabase(QueryExecutor executor) : super(executor);
+  // A constructor like this can use the default connection as described in the
+  // getting started guide, but also allows overriding the connection.
+  MyDatabase([QueryExecutor? executor]) : super(executor ?? _openConnection());
 
   @override
   int get schemaVersion => 1;
 }
-
-// #enddocregion isolate
+// #enddocregion isolate, database-definition
 
 // #docregion driftisolate-spawn
 Future<DriftIsolate> createIsolateWithSpawn() async {
+  final token = RootIsolateToken.instance;
   return await DriftIsolate.spawn(() {
+    // This function runs in a new isolate, so we must first initialize the
+    // messenger to use platform channels.
+    BackgroundIsolateBinaryMessenger.ensureInitialized(token);
+
     // The callback to DriftIsolate.spawn() must return the database connection
     // to use.
     return LazyDatabase(() async {
@@ -198,7 +218,13 @@ Future<void> insertBulkData(MyDatabase database) async {
         batch.insertAll(database.someTable, rows);
       });
     },
-    connect: MyDatabase.new,
+    connect: (connection) {
+      // This function is responsible for creating a second instance of your
+      // database class with a short-lived [connection].
+      // For this to work, your database class needs to have a constructor that
+      // allows taking a connection as described above.
+      return MyDatabase(connection);
+    },
   );
 }
 // #enddocregion compute

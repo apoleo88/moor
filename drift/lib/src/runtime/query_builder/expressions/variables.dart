@@ -65,7 +65,10 @@ class Variable<T extends Object> extends Expression<T> {
 
   @override
   void writeInto(GenerationContext context) {
-    if (!context.supportsVariables) {
+    if (!context.supportsVariables ||
+        // Workaround for https://github.com/simolus3/drift/issues/2441
+        // Binding nulls on postgres is currently untyped which causes issues.
+        (value == null && context.dialect == SqlDialect.postgres)) {
       // Write as constant instead.
       Constant<T>(value).writeInto(context);
       return;
@@ -74,15 +77,17 @@ class Variable<T extends Object> extends Expression<T> {
     var explicitStart = context.explicitVariableIndex;
 
     var mark = '?';
+    var suffix = '';
     if (context.dialect == SqlDialect.postgres) {
       explicitStart = 1;
-      mark = '@';
+      mark = r'$';
     }
 
     if (explicitStart != null) {
       context.buffer
         ..write(mark)
-        ..write(explicitStart + context.amountOfVariables);
+        ..write(explicitStart + context.amountOfVariables)
+        ..write(suffix);
       context.introduceVariable(
         this,
         mapToSimpleValue(context),

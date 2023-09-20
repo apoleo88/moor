@@ -14,7 +14,7 @@ In some cases, you might want to customize the generated classes though.
 For instance, you might want to add a mixin, let it extend another class or interface, or use other builders like
 `json_serializable` to customize how it gets serialized to json.
 
-Starting from moor version 4.3 (and in drift), it is possible to use your own classes as data classes.
+As a solution, drift allows you to use your own classes as data classes for the database.
 
 ## Using custom classes
 
@@ -90,6 +90,16 @@ after the name of the view in the `CREATE VIEW` statement:
 CREATE VIEW my_view WITH ExistingClass AS SELECT ...
 ```
 
+You can make drift target named constructors too:
+
+```sql
+CREATE TABLE users(
+  id INTEGER NOT NULL PRIMARY KEY,
+  name TEXT NOT NULL,
+  birth_date DATETIME NOT NULL
+) WITH User.myNamedConstructor;
+```
+
 ## Inserts and updates with custom classes
 
 In most cases, generated companion classes are the right tool for updates and inserts.
@@ -138,6 +148,21 @@ class MyExistingClass {
 myQuery WITH MyExistingClass: SELECT name, AVG(age) AS avg_age FROM entries GROUP BY category;
 ```
 
+Again, you can also target a named constructor:
+
+```sql
+/*
+class MyExistingClass {
+  final String name;
+  final double avgAge;
+
+  MyExistingClass.fromSql(this.name, this.avgAge);
+}
+*/
+
+myQuery WITH MyExistingClass.fromSql: SELECT name, AVG(age) AS avg_age FROM entries GROUP BY category;
+```
+
 For your convenience, drift is using different generation strategies even for queries _without_
 an existing row class. It is helpful to enumerate them because they affect the allowed type for
 fields in existing types as well.
@@ -156,8 +181,9 @@ fields in existing types as well.
 
 Depending on what kind of result set your query has, you can use different fields for the existing Dart class:
 
-1. For a nested table selected with `**`, your field needs to store an instance of the table's row class.
-   This is true for both drift-generated row classes and tables with existing, user-defined row classes.
+1. For a nested table selected with `**`, your field needs to store a structure compatible with the result set
+   the nested column points to. For `my_table.**`, that field could either be the generated row class for `MyTable`
+   or a custom class as described by rule 3.
 2. For nested list results, you have to use a `List<T>`. The `T` has to be compatible with the inner result
    set of the `LIST()` as described by these rules.
 3. For a single-table result, you can use the table class, regardless of whether the table uses an existing table
@@ -196,8 +222,8 @@ class EmployeeWithStaff {
 }
 ```
 
-As `self` is a `**` column, rule 1 applies. Therefore, `T1` must be `Employee`, the row class for the
-`employees` table.
+As `self` is a `**` column, rule 1 applies. `self` references a table, `employees`.
+By rule 3, this means that `T1` can be a `Employee`, the row class for the `employees` table.
 On the other hand, `staff` is a `LIST()` column and rule 2 applies here. This means that `T3` must
 be a `List<Something>`.
 The inner result set of the `LIST` references all columns of `employees` and nothing more, so rule
@@ -210,6 +236,8 @@ class IdAndName {
   final int id;
   final String name;
 
+  // This class can be used since id and name column are available from the list query.
+  // We could have also used the `Employee` class or a record like `(int, String)`.
   IdAndName(this.id, this.name);
 }
 

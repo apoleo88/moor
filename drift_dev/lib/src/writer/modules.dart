@@ -48,9 +48,14 @@ class ModularAccessorWriter {
     queries = queries.map((k, v) => MapEntry(k, mappedQueries[v] ?? v));
 
     for (final query in queries.entries) {
-      final queryElement = file.analysis[query.key]?.result;
+      final queryElement = file.analysis[query.key]?.result as DefinedSqlQuery?;
       if (queryElement != null) {
         referencedElements.addAll(queryElement.references);
+
+        if (queryElement.mode != QueryMode.regular) {
+          // Not a query for which a public API should exist
+          continue;
+        }
       }
 
       final value = query.value;
@@ -83,7 +88,7 @@ class ModularAccessorWriter {
       final file = driver.cache.knownFiles[import];
 
       if (file != null && file.needsModularAccessor(driver)) {
-        final moduleClass = restOfClass.modularAccessor(import);
+        final moduleClass = restOfClass.modularAccessor(import.uri);
         final getterName = ReCase(moduleClass.toString()).camelCase;
 
         restOfClass
