@@ -130,7 +130,7 @@ class DataClassWriter {
         ){
           String default_value = column.defaultArgument!.toString()
               .replaceFirst('const Constant(', '').replaceFirst(')', '');
-          return 'this.${column.nameInDart}: ${default_value}';
+          return 'this.${column.nameInDart} = ${default_value}';
         } else
         if (nullableDartType ||
             column.constraints.firstWhereOrNull((e) => e is PrimaryKeyColumn && e.isAutoIncrement) != null
